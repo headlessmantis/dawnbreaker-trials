@@ -1,0 +1,122 @@
+{{!-- Dawnbreaker Trials Ability Sheet --}}
+<form class="dawnbreaker dawnbreaker-item dawnbreaker-ability sheet" autocomplete="off">
+
+  {{!-- HEADER --}}
+  <header class="item-header">
+    <img class="item-img" src="{{item.img}}" data-edit="img" title="{{item.name}}"/>
+    <div class="item-header-fields">
+      <h1 class="item-name">
+        <input name="name" type="text" value="{{item.name}}" placeholder="Ability Name"/>
+      </h1>
+      <div class="item-header-row">
+        <div class="form-group">
+          <label>Class</label>
+          <input type="text" name="system.class" value="{{system.class}}" placeholder="e.g. Infantry, Any"/>
+        </div>
+        <div class="form-group">
+          <label>Ability Type</label>
+          <select name="system.abilityType">
+            <option value="mainActive"       {{#if (eq system.abilityType "mainActive")}}selected{{/if}}>Main Active</option>
+            <option value="secondaryActive"  {{#if (eq system.abilityType "secondaryActive")}}selected{{/if}}>Secondary Active</option>
+            <option value="reaction"         {{#if (eq system.abilityType "reaction")}}selected{{/if}}>Reaction</option>
+            <option value="passive"          {{#if (eq system.abilityType "passive")}}selected{{/if}}>Passive</option>
+            <option value="movement"         {{#if (eq system.abilityType "movement")}}selected{{/if}}>Movement</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>JP Cost</label>
+          <input type="text" name="system.jpCost" value="{{system.jpCost}}" placeholder="e.g. 60"/>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  {{!-- TABS --}}
+  <nav class="sheet-tabs tabs" data-group="primary">
+    <a class="item active" data-tab="ability-details">Details</a>
+    <a class="item" data-tab="ability-macro">Macro</a>
+  </nav>
+
+  {{!-- ═══ TAB: DETAILS ═══ --}}
+  <div class="sheet-body tab active" data-tab="ability-details" data-group="primary">
+
+    <div class="ability-stats-grid">
+      <div class="form-group">
+        <label>Attribute / Stat Used</label>
+        <input type="text" name="system.attribute" value="{{system.attribute}}" placeholder="e.g. STR, INT, DEX"/>
+      </div>
+      <div class="form-group">
+        <label>Reach</label>
+        <input type="text" name="system.reach" value="{{system.reach}}" placeholder="e.g. 1, Weapon, 4"/>
+      </div>
+      <div class="form-group">
+        <label>Range</label>
+        <input type="text" name="system.range" value="{{system.range}}" placeholder="e.g. 1, 2"/>
+      </div>
+      <div class="form-group">
+        <label>AP Cost</label>
+        <input type="text" name="system.apCost" value="{{system.apCost}}" placeholder="e.g. 100 AP"/>
+      </div>
+      <div class="form-group">
+        <label>KI Cost</label>
+        <input type="text" name="system.kiCost" value="{{system.kiCost}}" placeholder="e.g. 3 KI"/>
+      </div>
+      <div class="form-group">
+        <label>Speed</label>
+        <select name="system.speed">
+          <option value="instant"  {{#if (eq system.speed "instant")}}selected{{/if}}>Instant</option>
+          <option value="reaction" {{#if (eq system.speed "reaction")}}selected{{/if}}>Reaction</option>
+          <option value="passive"  {{#if (eq system.speed "passive")}}selected{{/if}}>Passive</option>
+          <option value="channel"  {{#if (eq system.speed "channel")}}selected{{/if}}>Channel</option>
+          <option value="other"    {{#if (eq system.speed "other")}}selected{{/if}}>Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Skill Level</label>
+        <input type="text" name="system.skillLevel" value="{{system.skillLevel}}" placeholder="e.g. 1, 2, Max 3"/>
+      </div>
+      <div class="form-group">
+        <label>Max Uses</label>
+        <input type="number" name="system.maxUses" value="{{system.maxUses}}" min="0" placeholder="0 = unlimited"/>
+      </div>
+    </div>
+
+    <div class="section-title">Effect</div>
+    <textarea name="system.effect" rows="5" placeholder="Describe the ability effect...">{{system.effect}}</textarea>
+
+    <div class="section-title" style="margin-top:0.5rem">Misc / Notes</div>
+    <textarea name="system.misc" rows="2" placeholder="e.g. Max 1, Cannot Stack, Learning...">{{system.misc}}</textarea>
+
+  </div>
+
+  {{!-- ═══ TAB: MACRO ═══ --}}
+  <div class="sheet-body tab" data-tab="ability-macro" data-group="primary">
+
+    <div class="macro-info">
+      <div class="macro-info-icon">🎲</div>
+      <div class="macro-info-text">
+        <p>Assign a Foundry macro to this ability. When a player clicks the roll button on their sheet, the macro with this name will execute automatically with the actor's data available.</p>
+        <p>The macro receives <code>actor</code> and <code>item</code> as arguments so it can access all character stats.</p>
+      </div>
+    </div>
+
+    <div class="section-title">Assigned Macro Name</div>
+    <div class="macro-name-row">
+      <input type="text" name="system.macroName" value="{{system.macroName}}" placeholder="Enter exact macro name (case-sensitive)..."/>
+      <button type="button" class="test-macro-btn" title="Test run this macro">▶</button>
+    </div>
+
+    <div class="section-title" style="margin-top:1rem">Roll Formula (optional)</div>
+    <p class="macro-hint">If no macro is assigned, this formula will be rolled directly. Use <code>@str.mod</code>, <code>@int.total</code> etc.</p>
+    <input type="text" name="system.rollFormula" value="{{system.rollFormula}}" placeholder="e.g. 1d20 + @str.mod, 1d4 + @spr.mod"/>
+
+    {{#if system.macroName}}
+    <div class="macro-assigned">
+      <span class="macro-assigned-icon">✓</span>
+      Macro assigned: <strong>{{system.macroName}}</strong>
+    </div>
+    {{/if}}
+
+  </div>
+
+</form>

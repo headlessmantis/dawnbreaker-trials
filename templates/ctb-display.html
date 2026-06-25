@@ -1,0 +1,82 @@
+{{!-- CTB Turn Order Display --}}
+<div class="ctb-panel">
+
+  {{#if inCombat}}
+
+  <div class="ctb-combatants">
+    {{#each combatants}}
+    <div class="ctb-row {{#if isActive}}ctb-active{{/if}} {{#if turnDone}}ctb-done{{/if}}">
+      <div class="ctb-portrait">
+        <img src="{{img}}" alt="{{name}}"/>
+        {{#if isActive}}<div class="ctb-active-pip"></div>{{/if}}
+      </div>
+      <div class="ctb-info">
+        <div class="ctb-name">{{name}}</div>
+        <div class="ctb-ap-bar-wrap">
+          <div class="ctb-ap-bar-fill" style="width:{{apPct}}%"></div>
+        </div>
+        <div class="ctb-ap-val">{{apCurrent}} AP {{#if showStats}}({{apTotal}} AP){{/if}}</div>
+        {{#if showStats}}
+        <div class="ctb-stats">
+          {{#if hp}}<span class="ctb-stat ctb-hp">❤ {{hp.current}}/{{hp.max}}</span>{{/if}}
+          {{#if ar}}<span class="ctb-stat ctb-ar">🛡 {{ar.current}}/{{ar.max}}</span>{{/if}}
+          {{#if ki}}<span class="ctb-stat ctb-ki">✨ {{ki.current}}/{{ki.max}}</span>{{/if}}
+        </div>
+        {{/if}}
+        {{#if conditions.length}}
+        <div class="ctb-conditions">
+          {{#each conditions}}<span class="ctb-condition-pip" title="{{name}} ({{duration}} turns)">{{name}}</span>{{/each}}
+        </div>
+        {{/if}}
+        {{#if battlecrazeHits}}
+        <div class="ctb-conditions">
+          <span class="ctb-condition-pip" style="color:#e07a30;border-color:#e07a30;" title="Battlecraze: {{battlecrazeHits}} hits — BRK +{{battlecrazeHits}}×2">💢 ×{{battlecrazeHits}} (+{{battlecrazeHits}}BRK×2)</span>
+        </div>
+        {{/if}}
+      </div>
+      {{#if ../isGM}}
+      <button class="ctb-remove-combatant" data-actor-id="{{actorId}}" title="Remove from combat" style="background:none;border:none;color:#e05555;cursor:pointer;font-size:14px;padding:2px 4px;flex-shrink:0;">✕</button>
+      {{/if}}
+    </div>
+    {{/each}}
+
+    {{!-- Cast Speed Queue entries --}}
+    {{#each castEntries}}
+    <div class="ctb-row ctb-cast-row">
+      <div class="ctb-portrait ctb-cast-icon">
+        <span>{{abilityIcon}}</span>
+      </div>
+      <div class="ctb-info">
+        <div class="ctb-name" style="color:#64d4ff;">{{abilityName}}</div>
+        <div class="ctb-ap-bar-wrap">
+          <div class="ctb-ap-bar-fill ctb-cast-bar" style="width:{{apPct}}%"></div>
+        </div>
+        <div class="ctb-ap-val" style="color:#64d4ff;">{{apCurrent}} / {{apTotal}} AP</div>
+        <div class="ctb-cast-caster">⚡ {{casterName}}</div>
+      </div>
+    </div>
+    {{/each}}
+
+  </div>
+
+  <div class="ctb-controls">
+    <button class="ctb-end-turn">✓ End Turn</button>
+    {{#if isGM}}
+    <button class="ctb-add-combatant" style="background:#1a2a1a;border:1px solid #81c784;color:#81c784;">+ Add Selected</button>
+    <button class="ctb-next-tick">⏭ Force Tick</button>
+    <button class="ctb-end-combat">🏳 End Combat</button>
+    {{/if}}
+  </div>
+
+  {{else}}
+
+  <div class="ctb-idle">
+    <div class="ctb-idle-msg">No combat active</div>
+    {{#if isGM}}
+    <div style="font-size:10px;color:#7a8090;margin-top:4px;">Use the "Start CTB Combat" macro to begin</div>
+    {{/if}}
+  </div>
+
+  {{/if}}
+
+</div>

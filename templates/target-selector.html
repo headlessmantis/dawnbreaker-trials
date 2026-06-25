@@ -1,0 +1,74 @@
+{{!-- Dawnbreaker Target Selector --}}
+<div class="db-target-panel">
+
+  <div class="db-target-header">
+    <div class="db-target-ability">
+      <span class="db-target-ability-icon">{{abilityIcon}}</span>
+      <div>
+        <div class="db-target-ability-name">{{abilityName}}</div>
+        <div class="db-target-ability-sub">{{abilityDesc}}</div>
+      </div>
+    </div>
+    {{#if reach}}<div class="db-target-meta">📏 Reach: {{reach}}t{{#if range}} | AoE: {{shape}} r{{range}}{{/if}}</div>{{/if}}
+  </div>
+
+  {{#if enemies.length}}
+  <div class="db-target-section-label">⚔ Targets</div>
+  <div class="db-target-list">
+    {{#each enemies}}
+    {{#if inRange}}
+    <div class="db-target-row" data-token-id="{{tokenId}}">
+      <img class="db-target-portrait" src="{{img}}" alt="{{name}}"/>
+      <div class="db-target-info">
+        <div class="db-target-name">{{name}} <span class="db-target-dist">({{dist}}t)</span></div>
+        <div class="db-target-bars">
+          {{#if hp}}<span class="db-tbar db-tbar-hp">❤ {{hp.current}}/{{hp.max}}</span>{{/if}}
+          {{#if ar}}<span class="db-tbar db-tbar-ar">🛡 {{ar.current}}/{{ar.max}}</span>{{/if}}
+          {{#if ki}}<span class="db-tbar db-tbar-ki">✨ {{ki.current}}/{{ki.max}}</span>{{/if}}
+          {{#unless hp}}<span class="db-tbar" style="color:#555;font-style:italic;">Not scanned</span>{{/unless}}
+        </div>
+        {{#if conditions.length}}
+        <div class="db-target-conditions">
+          {{#each conditions}}<span class="db-tcond">{{name}} ({{duration}}t)</span>{{/each}}
+        </div>
+        {{/if}}
+      </div>
+      <button class="db-target-btn" data-token-id="{{tokenId}}">▶</button>
+    </div>
+    {{/if}}
+    {{/each}}
+  </div>
+  {{/if}}
+
+  {{#if allies.length}}
+  <div class="db-target-section-label">🤝 Targets</div>
+  <div class="db-target-list">
+    {{#each allies}}
+    {{#if inRange}}
+    <div class="db-target-row db-target-row-ally" data-token-id="{{tokenId}}">
+      <img class="db-target-portrait" src="{{img}}" alt="{{name}}"/>
+      <div class="db-target-info">
+        <div class="db-target-name">{{name}} <span class="db-target-dist">({{dist}}t)</span></div>
+        <div class="db-target-bars">
+          {{#if hp}}<span class="db-tbar db-tbar-hp">❤ {{hp.current}}/{{hp.max}}</span>{{/if}}
+          {{#if ar}}<span class="db-tbar db-tbar-ar">🛡 {{ar.current}}/{{ar.max}}</span>{{/if}}
+          {{#if ki}}<span class="db-tbar db-tbar-ki">✨ {{ki.current}}/{{ki.max}}</span>{{/if}}
+        </div>
+        {{#if conditions.length}}
+        <div class="db-target-conditions">
+          {{#each conditions}}<span class="db-tcond">{{name}} ({{duration}}t)</span>{{/each}}
+        </div>
+        {{/if}}
+      </div>
+      <button class="db-target-btn db-target-btn-ally" data-token-id="{{tokenId}}">▶</button>
+    </div>
+    {{/if}}
+    {{/each}}
+  </div>
+  {{/if}}
+
+  {{#unless anyInRange}}
+  <div class="db-target-empty">No Targets In Range</div>
+  {{/unless}}
+
+</div>

@@ -1,0 +1,35 @@
+{
+  "id": "dawnbreaker-trials",
+  "title": "Dawnbreaker Trials",
+  "description": "Custom character sheet system for Dawnbreaker Trials.",
+  "version": "1.0.0",
+  "compatibility": {
+    "minimum": "12",
+    "verified": "13"
+  },
+  "authors": [{"name": "Custom Build"}],
+  "esmodules": ["scripts/dawnbreaker.mjs"],
+  "styles": ["styles/dawnbreaker.css"],
+  "languages": [],
+  "packs": [],
+  "socket": true,
+  "url": "https://github.com/headlessmantis/dawnbreaker-trials",
+  "manifest": "https://raw.githubusercontent.com/headlessmantis/dawnbreaker-trials/main/system.json",
+  "download": "https://github.com/headlessmantis/dawnbreaker-trials/archive/refs/heads/main.zip",
+  "documentTypes": {
+    "Actor": {
+      "character": {},
+      "npc": {}
+    },
+    "Item": {
+      "weapon":     {},
+      "armor":      {},
+      "offhand":    {},
+      "consumable": {},
+      "common":     {},
+      "special":    {},
+      "craft":      {},
+      "ability":    {}
+    }
+  }
+}

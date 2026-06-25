@@ -1,0 +1,18 @@
+{
+  "Actor": {
+    "types": ["character", "npc"],
+    "character": {},
+    "npc": {}
+  },
+  "Item": {
+    "types": ["weapon","armor","offhand","consumable","common","special","craft","ability"],
+    "weapon":     {},
+    "armor":      {},
+    "offhand":    {},
+    "consumable": {},
+    "common":     {},
+    "special":    {},
+    "craft":      {},
+    "ability":    {}
+  }
+}

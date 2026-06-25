@@ -1,0 +1,211 @@
+{{!-- Dawnbreaker Trials NPC Sheet --}}
+<form class="dawnbreaker dawnbreaker-npc sheet" autocomplete="off">
+
+  {{!-- HEADER --}}
+  <header class="npc-header">
+    <img class="npc-img" src="{{actor.img}}" data-edit="img" title="{{actor.name}}" />
+    <div class="npc-header-fields">
+      <h1 class="npc-name">
+        <input name="name" type="text" value="{{actor.name}}" placeholder="NPC Name"/>
+      </h1>
+      <div class="npc-header-row">
+        <div class="form-group"><label>Role / Type</label><input type="text" name="system.role" value="{{system.role}}" placeholder="e.g. Elite Guard"/></div>
+        <div class="form-group"><label>CR / Rank</label><input type="text" name="system.rank" value="{{system.rank}}" placeholder="e.g. Rank 2"/></div>
+        <div class="form-group"><label>Faction</label><input type="text" name="system.faction" value="{{system.faction}}" placeholder="e.g. Ironveil"/></div>
+        <div class="form-group"><label>AP (Current)</label><input type="number" name="system.ctbAP" value="{{system.ctbAP}}" min="-100"/></div>
+      </div>
+    </div>
+  </header>
+
+  {{!-- TABS --}}
+  <nav class="sheet-tabs tabs" data-group="primary">
+    <a class="item" data-tab="npc-core">Stats</a>
+    <a class="item" data-tab="npc-attacks">Attacks</a>
+    <a class="item" data-tab="npc-notes">Notes</a>
+  </nav>
+
+  {{!-- ═══════════════ TAB: CORE ═══════════════ --}}
+  <div class="sheet-body tab active" data-tab="npc-core" data-group="primary">
+
+    {{!-- RESOURCES --}}
+    <div class="section-title">Resources</div>
+    <div class="npc-resources">
+
+      <div class="resource-block hp-block">
+        <div class="resource-title">Health (HP)</div>
+        <div class="npc-res-row">
+          <div class="npc-res-cell"><span class="res-lbl">Current</span><input type="number" name="system.hp.current" value="{{system.hp.current}}" min="0"/></div>
+          <div class="npc-res-sep">/</div>
+          <div class="npc-res-cell"><span class="res-lbl">Max</span><input type="number" name="system.hp.max" value="{{system.hp.max}}" min="0"/></div>
+        </div>
+      </div>
+
+      <div class="resource-block ar-block">
+        <div class="resource-title">Armor (AR)</div>
+        <div class="npc-res-row">
+          <div class="npc-res-cell"><span class="res-lbl">Current</span><input type="number" name="system.ar.current" value="{{system.ar.current}}" min="0"/></div>
+          <div class="npc-res-sep">/</div>
+          <div class="npc-res-cell"><span class="res-lbl">Max</span><input type="number" name="system.ar.max" value="{{system.ar.max}}" min="0"/></div>
+        </div>
+      </div>
+
+      <div class="resource-block ki-block">
+        <div class="resource-title">Ki (KI)</div>
+        <div class="npc-res-row">
+          <div class="npc-res-cell"><span class="res-lbl">Current</span><input type="number" name="system.ki.current" value="{{system.ki.current}}" min="0"/></div>
+          <div class="npc-res-sep">/</div>
+          <div class="npc-res-cell"><span class="res-lbl">Max</span><input type="number" name="system.ki.max" value="{{system.ki.max}}" min="0"/></div>
+        </div>
+      </div>
+
+    </div>
+
+    {{!-- STATS --}}
+    <div class="section-title">Stats <span class="section-hint">(leave blank if unused)</span></div>
+    <div class="npc-stats-grid">
+
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">STR</div>
+        <input type="number" name="system.stats.STR" value="{{system.stats.STR}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">CON</div>
+        <input type="number" name="system.stats.CON" value="{{system.stats.CON}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">AGI</div>
+        <input type="number" name="system.stats.AGI" value="{{system.stats.AGI}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">DEX</div>
+        <input type="number" name="system.stats.DEX" value="{{system.stats.DEX}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">INT</div>
+        <input type="number" name="system.stats.INT" value="{{system.stats.INT}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">SPR</div>
+        <input type="number" name="system.stats.SPR" value="{{system.stats.SPR}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">FOR</div>
+        <input type="number" name="system.stats.FOR" value="{{system.stats.FOR}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">WIL</div>
+        <input type="number" name="system.stats.WIL" value="{{system.stats.WIL}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">CHA</div>
+        <input type="number" name="system.stats.CHA" value="{{system.stats.CHA}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">MV</div>
+        <input type="number" name="system.stats.MV" value="{{system.stats.MV}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">AP</div>
+        <input type="number" name="system.stats.AP" value="{{system.stats.AP}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">ASS</div>
+        <input type="number" name="system.stats.ASS" value="{{system.stats.ASS}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">PR</div>
+        <input type="number" name="system.stats.PR" value="{{system.stats.PR}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">BRK</div>
+        <input type="number" name="system.stats.BRK" value="{{system.stats.BRK}}" placeholder="—"/>
+      </div>
+      <div class="npc-stat-block">
+        <div class="npc-stat-name">MR</div>
+        <input type="number" name="system.stats.MR" value="{{system.stats.MR}}" placeholder="—"/>
+      </div>
+
+    </div>
+
+  </div>
+
+  {{!-- ═══════════════ TAB: ATTACKS ═══════════════ --}}
+  <div class="sheet-body tab" data-tab="npc-attacks" data-group="primary">
+
+    <div class="section-title">Attacks & Abilities
+      <button type="button" class="add-row" data-type="npcAttacks">+ Add</button>
+    </div>
+    <table class="ability-table">
+      <thead><tr><th>Name</th><th>Stat</th><th>Weapon Dmg</th><th>Cost</th><th>Speed</th><th>Effect</th><th></th></tr></thead>
+      <tbody>
+        {{#each system.attacks}}
+        <tr>
+          <td><input type="text" name="system.attacks.{{@index}}.name" value="{{this.name}}"/></td>
+          <td><input type="text" name="system.attacks.{{@index}}.stat" value="{{this.stat}}" placeholder="STR"/></td>
+          <td><input type="number" name="system.attacks.{{@index}}.weaponDmg" value="{{this.weaponDmg}}"/></td>
+          <td><input type="text" name="system.attacks.{{@index}}.cost" value="{{this.cost}}"/></td>
+          <td><input type="text" name="system.attacks.{{@index}}.speed" value="{{this.speed}}"/></td>
+          <td><input type="text" name="system.attacks.{{@index}}.effect" value="{{this.effect}}"/></td>
+          <td><button type="button" class="del-row" data-type="npcAttacks" data-index="{{@index}}">✕</button></td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+
+  </div>
+
+  {{!-- ═══════════════ TAB: NOTES ═══════════════ --}}
+  <div class="sheet-body tab" data-tab="npc-notes" data-group="primary">
+
+    <div class="section-title">Attack Animation (Sequencer)</div>
+    <p style="font-size:11px;color:#7a8090;margin:2px 0 4px;">Plays on standard attacks. e.g. <code>jb2a.impact.002.orange</code></p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;">
+      <input type="text" name="system.animationFile" value="{{system.animationFile}}" placeholder="e.g. jb2a.melee_attack.01.blue" style="flex:1;"/>
+      <input type="number" name="system.animationScale" value="{{system.animationScale}}" placeholder="Scale" step="0.1" min="0.1" max="5" style="width:64px;text-align:center;" title="Animation scale (default 1.0)"/>
+    </div>
+    <input type="text" name="system.animationSound" value="{{system.animationSound}}" placeholder="Sound file path e.g. sounds/sword.mp3" style="margin-bottom:12px;width:100%;box-sizing:border-box;"/>
+
+    <div class="section-title">Animation Slots
+      <button type="button" class="add-row" data-type="npcAnimSlots">+ Add</button>
+    </div>
+    <p style="font-size:11px;color:#7a8090;margin:2px 0 6px;">Named event animations. Leave file blank to skip. Scale defaults to 1.0.</p>
+    <table class="ability-table">
+      <thead><tr><th style="width:110px">Event Name</th><th>File (JB2A path or URL)</th><th style="width:56px">Scale</th><th>Sound</th><th></th></tr></thead>
+      <tbody>
+        {{#each system.animationSlots}}
+        <tr>
+          <td><input type="text" name="system.animationSlots.{{@index}}.name"  value="{{this.name}}"  placeholder="e.g. burrow"/></td>
+          <td><input type="text" name="system.animationSlots.{{@index}}.file"  value="{{this.file}}"  placeholder="jb2a.…"/></td>
+          <td><input type="number" name="system.animationSlots.{{@index}}.scale" value="{{this.scale}}" placeholder="1.0" step="0.1" min="0.1" max="5"/></td>
+          <td><input type="text" name="system.animationSlots.{{@index}}.sound" value="{{this.sound}}" placeholder="sounds/…"/></td>
+          <td><button type="button" class="del-row" data-type="npcAnimSlots" data-index="{{@index}}">✕</button></td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+
+    <div class="section-title">GM Notes</div>
+    <textarea name="system.notes" rows="8" placeholder="Tactics, lore, special rules...">{{system.notes}}</textarea>
+
+    <div class="section-title" style="margin-top:1rem">Conditions
+      <button type="button" class="add-row" data-type="npcConditions">+ Add</button>
+    </div>
+    <table class="ability-table">
+      <thead><tr><th>Condition</th><th>Turns</th><th>Hits</th><th>Effect</th><th>Label</th><th></th></tr></thead>
+      <tbody>
+        {{#each system.conditions}}
+        <tr>
+          <td><input type="text" name="system.conditions.{{@index}}.name" value="{{this.name}}"/></td>
+          <td style="width:48px"><input type="number" name="system.conditions.{{@index}}.duration" value="{{this.duration}}" min="0"/></td>
+          <td style="width:40px"><input type="number" name="system.conditions.{{@index}}.instance" value="{{this.instance}}" min="0" title="Hits before consumed"/></td>
+          <td><input type="text" name="system.conditions.{{@index}}.effect" value="{{this.effect}}" placeholder="-20% or -100%"/></td>
+          <td style="width:80px"><input type="text" name="system.conditions.{{@index}}.label" value="{{this.label}}" placeholder="e.g. shield"/></td>
+          <td><button type="button" class="del-row" data-type="npcConditions" data-index="{{@index}}">✕</button></td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+
+  </div>
+
+</form>

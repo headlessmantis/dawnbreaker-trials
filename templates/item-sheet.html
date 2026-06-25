@@ -1,0 +1,272 @@
+{{!-- Dawnbreaker Trials Item Sheet --}}
+<form class="dawnbreaker dawnbreaker-item sheet" autocomplete="off">
+
+  {{!-- HEADER --}}
+  <header class="item-header">
+    <img class="item-img" src="{{item.img}}" data-edit="img" title="{{item.name}}"/>
+    <div class="item-header-fields">
+      <h1 class="item-name">
+        <input name="name" type="text" value="{{item.name}}" placeholder="Item Name"/>
+      </h1>
+      <div class="item-header-row">
+        <div class="form-group">
+          <label>Item Type</label>
+          <select name="system.itemType">
+            <option value="weapon"     {{#if (eq system.itemType "weapon")}}selected{{/if}}>Weapon</option>
+            <option value="armor"      {{#if (eq system.itemType "armor")}}selected{{/if}}>Armor</option>
+            <option value="offhand"    {{#if (eq system.itemType "offhand")}}selected{{/if}}>Off-Hand</option>
+            <option value="consumable" {{#if (eq system.itemType "consumable")}}selected{{/if}}>Consumable</option>
+            <option value="common"     {{#if (eq system.itemType "common")}}selected{{/if}}>Common</option>
+            <option value="special"    {{#if (eq system.itemType "special")}}selected{{/if}}>Special</option>
+            <option value="craft"      {{#if (eq system.itemType "craft")}}selected{{/if}}>Craft</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Slot</label>
+          <select name="system.slot">
+            <option value=""        {{#if (eq system.slot "")}}selected{{/if}}>— None —</option>
+            <option value="weapon"  {{#if (eq system.slot "weapon")}}selected{{/if}}>Weapon</option>
+            <option value="offhand" {{#if (eq system.slot "offhand")}}selected{{/if}}>Off-Hand</option>
+            <option value="chest"   {{#if (eq system.slot "chest")}}selected{{/if}}>Chest</option>
+            <option value="head"    {{#if (eq system.slot "head")}}selected{{/if}}>Head</option>
+            <option value="legs"    {{#if (eq system.slot "legs")}}selected{{/if}}>Legs</option>
+            <option value="item"    {{#if (eq system.slot "item")}}selected{{/if}}>Item</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Attribute</label>
+          <select name="system.attribute">
+            <option value="physical" {{#if (eq system.attribute "physical")}}selected{{/if}}>Physical</option>
+            <option value="magical"  {{#if (eq system.attribute "magical")}}selected{{/if}}>Magical</option>
+            <option value="science"  {{#if (eq system.attribute "science")}}selected{{/if}}>Science</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Cost (Credits)</label>
+          <input type="number" name="system.cost" value="{{system.cost}}" min="0"/>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  {{!-- TABS --}}
+  <nav class="sheet-tabs tabs" data-group="primary">
+    <a class="item active" data-tab="item-details">Details</a>
+    <a class="item" data-tab="item-stats">Bonuses</a>
+    <a class="item" data-tab="item-recipe">Recipe</a>
+    <a class="item" data-tab="item-macro">Macro</a>
+  </nav>
+
+  {{!-- ═══ TAB: DETAILS ═══ --}}
+  <div class="sheet-body tab active" data-tab="item-details" data-group="primary">
+
+    {{!-- WEAPON FIELDS --}}
+    {{#if system.isWeapon}}
+    <div class="section-title">Weapon Details</div>
+    <div class="item-detail-grid">
+      <div class="form-group">
+        <label>Weapon Type</label>
+        <select name="system.weaponType">
+          <option value=""            {{#if (eq system.weaponType "")}}selected{{/if}}>— Select —</option>
+          <option value="sword"       {{#if (eq system.weaponType "sword")}}selected{{/if}}>Sword</option>
+          <option value="dagger"      {{#if (eq system.weaponType "dagger")}}selected{{/if}}>Dagger</option>
+          <option value="longspear"   {{#if (eq system.weaponType "longspear")}}selected{{/if}}>Longspear</option>
+          <option value="greatsword"  {{#if (eq system.weaponType "greatsword")}}selected{{/if}}>Greatsword</option>
+          <option value="mace"        {{#if (eq system.weaponType "mace")}}selected{{/if}}>Mace</option>
+          <option value="warhammer"   {{#if (eq system.weaponType "warhammer")}}selected{{/if}}>Warhammer</option>
+          <option value="axe"         {{#if (eq system.weaponType "axe")}}selected{{/if}}>Axe</option>
+          <option value="staff"       {{#if (eq system.weaponType "staff")}}selected{{/if}}>Staff</option>
+          <option value="tome"        {{#if (eq system.weaponType "tome")}}selected{{/if}}>Tome</option>
+          <option value="shield"      {{#if (eq system.weaponType "shield")}}selected{{/if}}>Shield</option>
+          <option value="shortbow"    {{#if (eq system.weaponType "shortbow")}}selected{{/if}}>Shortbow</option>
+          <option value="gun"         {{#if (eq system.weaponType "gun")}}selected{{/if}}>Gun</option>
+          <option value="gauntlet"    {{#if (eq system.weaponType "gauntlet")}}selected{{/if}}>Gauntlet</option>
+          <option value="whip"        {{#if (eq system.weaponType "whip")}}selected{{/if}}>Whip</option>
+          <option value="wand"        {{#if (eq system.weaponType "wand")}}selected{{/if}}>Wand</option>
+          <option value="dualwield"   {{#if (eq system.weaponType "dualwield")}}selected{{/if}}>Dual Wield</option>
+          <option value="unarmed"     {{#if (eq system.weaponType "unarmed")}}selected{{/if}}>Unarmed</option>
+          <option value="other"       {{#if (eq system.weaponType "other")}}selected{{/if}}>Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Gear Type</label>
+        <input type="text" name="system.gearType" value="{{system.gearType}}" placeholder="e.g. Melee 2"/>
+      </div>
+      <div class="form-group">
+        <label>Subtype</label>
+        <select name="system.subtype">
+          <option value="slash"       {{#if (eq system.subtype "slash")}}selected{{/if}}>Slash</option>
+          <option value="pierce"      {{#if (eq system.subtype "pierce")}}selected{{/if}}>Pierce</option>
+          <option value="smash"       {{#if (eq system.subtype "smash")}}selected{{/if}}>Smash</option>
+          <option value="slash/smash" {{#if (eq system.subtype "slash/smash")}}selected{{/if}}>Slash / Smash</option>
+          <option value="n/a"         {{#if (eq system.subtype "n/a")}}selected{{/if}}>N/A</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Attack Stat</label>
+        <select name="system.attackStat">
+          <option value="STR" {{#if (eq system.attackStat "STR")}}selected{{/if}}>STR</option>
+          <option value="CON" {{#if (eq system.attackStat "CON")}}selected{{/if}}>CON</option>
+          <option value="AGI" {{#if (eq system.attackStat "AGI")}}selected{{/if}}>AGI</option>
+          <option value="DEX" {{#if (eq system.attackStat "DEX")}}selected{{/if}}>DEX</option>
+          <option value="INT" {{#if (eq system.attackStat "INT")}}selected{{/if}}>INT</option>
+          <option value="SPR" {{#if (eq system.attackStat "SPR")}}selected{{/if}}>SPR</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Reach</label>
+        <input type="number" name="system.reach" value="{{system.reach}}" min="1"/>
+      </div>
+    </div>
+    {{/if}}
+
+    {{!-- ARMOR FIELDS --}}
+    {{#if system.isArmor}}
+    <div class="section-title">Armor Details</div>
+    <div class="item-detail-grid">
+      <div class="form-group">
+        <label>Gear Type / Tier</label>
+        <input type="text" name="system.gearType" value="{{system.gearType}}" placeholder="e.g. 3"/>
+      </div>
+      <div class="form-group">
+        <label>Armor Slot</label>
+        <input type="text" name="system.armorSlot" value="{{system.armorSlot}}" placeholder="Chest / Head / Legs"/>
+      </div>
+    </div>
+    {{/if}}
+
+    {{!-- CONSUMABLE/COMMON/SPECIAL --}}
+    {{#if system.isOther}}
+    <div class="section-title">Item Details</div>
+    <div class="item-detail-grid">
+      <div class="form-group">
+        <label>Subtype</label>
+        <input type="text" name="system.subtype" value="{{system.subtype}}" placeholder="e.g. Potion, Trap, Use"/>
+      </div>
+      <div class="form-group">
+        <label>Expires After Use</label>
+        <input type="checkbox" name="system.expires" {{#if system.expires}}checked{{/if}}/>
+      </div>
+    </div>
+    {{/if}}
+
+    {{!-- EFFECT --}}
+    <div class="section-title">Effect / Description</div>
+    <textarea name="system.effect" rows="4" placeholder="Describe the item effect...">{{system.effect}}</textarea>
+
+    {{!-- QUANTITY --}}
+    <div class="section-title">Quantity</div>
+    <div class="item-detail-grid">
+      <div class="form-group">
+        <label>Qty</label>
+        <input type="number" name="system.qty" value="{{system.qty}}" min="0"/>
+      </div>
+      <div class="form-group">
+        <label>Equipped</label>
+        <input type="checkbox" name="system.equipped" {{#if system.equipped}}checked{{/if}}/>
+      </div>
+    </div>
+
+  </div>
+
+  {{!-- ═══ TAB: BONUSES ═══ --}}
+  <div class="sheet-body tab" data-tab="item-stats" data-group="primary">
+
+    <div class="section-title">Stat Bonuses <span style="font-size:9px;color:#7a8090;text-transform:none;letter-spacing:0;font-weight:400">(applied to character when Equipped)</span></div>
+    <div class="bonus-grid">
+      <div class="bonus-row"><label>DAM</label><input type="number" name="system.bonuses.dam" value="{{system.bonuses.dam}}"/></div>
+      <div class="bonus-row"><label>STR</label><input type="number" name="system.bonuses.str" value="{{system.bonuses.str}}"/></div>
+      <div class="bonus-row"><label>CON</label><input type="number" name="system.bonuses.con" value="{{system.bonuses.con}}"/></div>
+      <div class="bonus-row"><label>AGI</label><input type="number" name="system.bonuses.agi" value="{{system.bonuses.agi}}"/></div>
+      <div class="bonus-row"><label>DEX</label><input type="number" name="system.bonuses.dex" value="{{system.bonuses.dex}}"/></div>
+      <div class="bonus-row"><label>INT</label><input type="number" name="system.bonuses.int" value="{{system.bonuses.int}}"/></div>
+      <div class="bonus-row"><label>SPR</label><input type="number" name="system.bonuses.spr" value="{{system.bonuses.spr}}"/></div>
+      <div class="bonus-row"><label>FOR</label><input type="number" name="system.bonuses.for" value="{{system.bonuses.for}}"/></div>
+      <div class="bonus-row"><label>WIL</label><input type="number" name="system.bonuses.wil" value="{{system.bonuses.wil}}"/></div>
+      <div class="bonus-row"><label>CHA</label><input type="number" name="system.bonuses.cha" value="{{system.bonuses.cha}}"/></div>
+      <div class="bonus-row"><label>MV</label><input type="number" name="system.bonuses.mv" value="{{system.bonuses.mv}}"/></div>
+      <div class="bonus-row"><label>AP</label><input type="number" name="system.bonuses.ap" value="{{system.bonuses.ap}}"/></div>
+      <div class="bonus-row"><label>ASS</label><input type="number" name="system.bonuses.ass" value="{{system.bonuses.ass}}"/></div>
+      <div class="bonus-row"><label>PR</label><input type="number" name="system.bonuses.pr" value="{{system.bonuses.pr}}"/></div>
+      <div class="bonus-row"><label>BRK</label><input type="number" name="system.bonuses.brk" value="{{system.bonuses.brk}}"/></div>
+      <div class="bonus-row"><label>MR</label><input type="number" name="system.bonuses.mr" value="{{system.bonuses.mr}}"/></div>
+      <div class="bonus-row"><label>AR</label><input type="number" name="system.bonuses.ar" value="{{system.bonuses.ar}}"/></div>
+      <div class="bonus-row"><label>HP</label><input type="number" name="system.bonuses.hp" value="{{system.bonuses.hp}}"/></div>
+      <div class="bonus-row"><label>KI</label><input type="number" name="system.bonuses.ki" value="{{system.bonuses.ki}}"/></div>
+    </div>
+
+  </div>
+
+  {{!-- ═══ TAB: RECIPE ═══ --}}
+  <div class="sheet-body tab" data-tab="item-recipe" data-group="primary">
+
+    <div class="section-title">Crafting Recipe</div>
+    <textarea name="system.recipe" rows="3" placeholder="e.g. 3 Ore, 1 Wood">{{system.recipe}}</textarea>
+
+    <div class="section-title" style="margin-top:1rem">Upgrade Notes</div>
+    <textarea name="system.upgradeNotes" rows="3" placeholder="Upgrade path or requirements...">{{system.upgradeNotes}}</textarea>
+
+  </div>
+
+  {{!-- ═══ TAB: MACRO ═══ --}}
+  <div class="sheet-body tab" data-tab="item-macro" data-group="primary">
+
+    <div class="macro-info">
+      <div class="macro-info-icon">🎲</div>
+      <div class="macro-info-text">
+        <p>Assign a Foundry macro to this item. When used from the character sheet the macro will execute with actor and item data available.</p>
+      </div>
+    </div>
+
+    <div class="section-title">Assigned Macro Name</div>
+    <div class="macro-name-row">
+      <input type="text" name="system.macroName" value="{{system.macroName}}" placeholder="Enter exact macro name (case-sensitive)..."/>
+      <button type="button" class="test-macro-btn" title="Test run this macro">▶</button>
+    </div>
+
+    <div class="section-title" style="margin-top:1rem">Hit Animation (Sequencer)</div>
+    <p class="macro-hint">JB2A file path played on hit. e.g. <code>jb2a.impact.002.orange</code></p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;">
+      <input type="text" name="system.animationFile" value="{{system.animationFile}}" placeholder="e.g. jb2a.sword_strike.01.white" style="flex:1;"/>
+      <input type="number" name="system.animationScale" value="{{system.animationScale}}" placeholder="Scale" step="0.1" min="0.1" max="5" style="width:64px;text-align:center;" title="Animation scale (default 1.0)"/>
+    </div>
+    <input type="text" name="system.animationSound" value="{{system.animationSound}}" placeholder="Sound file path e.g. sounds/sword.mp3"/>
+
+    <div class="section-title" style="margin-top:1rem">Roll Formula (optional)</div>
+    <p class="macro-hint">If no macro is assigned, this formula will be rolled directly. Use <code>@str.mod</code>, <code>@int.total</code> etc.</p>
+    <input type="text" name="system.rollFormula" value="{{system.rollFormula}}" placeholder="e.g. 1d20 + @str.mod"/>
+
+    {{#if system.macroName}}
+    <div class="macro-assigned">
+      <span class="macro-assigned-icon">✓</span>
+      Macro assigned: <strong>{{system.macroName}}</strong>
+    </div>
+    {{/if}}
+
+    <div class="section-title" style="margin-top:1rem">Available Macro Labels</div>
+    <div class="macro-label-grid">
+      <div class="macro-label-section">
+        <div class="macro-label-title">Equipped Weapon</div>
+        <code>@weapon.name</code><code>@weapon.type</code><code>@weapon.attackStat</code>
+        <code>@weapon.attackStatTotal</code><code>@weapon.dam</code>
+        <code>@weapon.profLevel</code><code>@weapon.profBonus</code><code>@weapon.dmgBonus</code>
+      </div>
+      <div class="macro-label-section">
+        <div class="macro-label-title">Proficiencies (0–3)</div>
+        <code>@prof.sword</code><code>@prof.axe</code><code>@prof.dagger</code>
+        <code>@prof.greatsword</code><code>@prof.mace</code><code>@prof.warhammer</code>
+        <code>@prof.staff</code><code>@prof.shortbow</code><code>@prof.wand</code>
+        <code>@prof.gauntlet</code><code>@prof.whip</code><code>@prof.shield</code>
+      </div>
+      <div class="macro-label-section">
+        <div class="macro-label-title">Stats</div>
+        <code>@str.mod</code><code>@str.total</code><code>@con.mod</code>
+        <code>@agi.mod</code><code>@dex.mod</code><code>@int.mod</code><code>@spr.mod</code>
+        <code>@for.total</code><code>@wil.total</code><code>@pr.total</code><code>@mr.total</code>
+        <code>@brk.total</code><code>@level</code><code>@fame</code>
+      </div>
+    </div>
+
+  </div>
+
+</form>
