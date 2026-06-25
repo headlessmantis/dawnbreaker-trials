@@ -2757,6 +2757,15 @@ class CTBDisplay extends foundry.appv1.api.Application {
   static get defaultOptions() {
     return foundry.utils.mergeObject(super.defaultOptions, { id: "ctb-display", title: "Turn Order", template: "systems/dawnbreaker-trials/templates/ctb-display.html", width: 260, height: "auto", resizable: true, popOut: true, classes: ["ctb-display"], left: 10, top: 60 });
   }
+  async _render(force, options) {
+    await super._render(force, options);
+    if (force) CTBDisplay._anchorToHUD(this);
+  }
+  static _anchorToHUD(app) {
+    const hud = document.querySelector("#ib-hud-layer");
+    const top = hud ? hud.getBoundingClientRect().top : 60;
+    app.setPosition({ left: 330, top });
+  }
   getData() {
     const state = CTB.getState();
     const combatants = (state.combatants ?? []).map(c => {
@@ -3617,6 +3626,21 @@ Hooks.once("init", () => {
 // ═══════════════════════════════════════════════════════════
 //  READY HOOK
 // ═══════════════════════════════════════════════════════════
+Hooks.on("renderApplication", (app, html) => {
+  const DialogClass = foundry.appv1?.applications?.Dialog ?? (typeof Dialog !== "undefined" ? Dialog : null);
+  if (!DialogClass || !(app instanceof DialogClass)) return;
+  // Find the rightmost rendered app to anchor dialogs beside
+  const openApps = Object.values(ui.windows ?? {}).filter(w => w.rendered && w.id !== app.id);
+  if (!openApps.length) return;
+  const rightmost = openApps.reduce((best, w) => {
+    const r = (w.position?.left ?? 0) + (w.position?.width ?? 0);
+    const b = (best.position?.left ?? 0) + (best.position?.width ?? 0);
+    return r > b ? w : best;
+  });
+  const { left, top, width } = rightmost.position ?? {};
+  if (left != null) app.setPosition({ left: left + width + 8, top });
+});
+
 Hooks.once("ready", () => {
   game.settings.register("dawnbreaker-trials", "ctbState", { scope: "world", config: false, type: Object, default: {} });
   game.settings.register("dawnbreaker-trials", "castQueueState", { scope: "world", config: false, type: Array, default: [] });
