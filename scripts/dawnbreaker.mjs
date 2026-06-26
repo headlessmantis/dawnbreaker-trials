@@ -3852,6 +3852,40 @@ Hooks.once("ready", () => {
         const scene = game.scenes.active;
         if (!scene) return;
         await scene.createEmbeddedDocuments("Token", [data.tokenData]);
+      } else if (data.type === "deployHealingBeacon" && game.user.isGM) {
+        const scene = game.scenes.active;
+        if (!scene) return;
+        const [createdToken] = await scene.createEmbeddedDocuments("Token", [data.tokenData]);
+        await new Promise(r => setTimeout(r, 300));
+        const beaconCanvasToken = canvas.tokens.placeables.find(t => t.document.id === createdToken.id);
+        const beaconActor = beaconCanvasToken?.actor;
+        if (beaconActor) {
+          if (data.spawnAnimFile && window._playHitAnimation && beaconCanvasToken) {
+            await window._playHitAnimation(beaconCanvasToken, data.spawnAnimFile, data.spawnAnimScale, data.spawnAnimSound, null);
+          }
+          await beaconActor.setFlag("dawnbreaker-trials", "healingBeacon", {
+            active: true, turns: 0,
+            animFile: data.spawnAnimFile, animScale: data.spawnAnimScale, animSound: data.spawnAnimSound,
+            healAnimFile: data.healAnimFile, healAnimScale: data.healAnimScale, healAnimSound: data.healAnimSound,
+          });
+          await beaconActor.update({ "system.hp.current": 3, "system.hp.max": 3 });
+          const ctbState   = window.CTB.getState();
+          const combatants = ctbState.combatants ?? [];
+          combatants.push({
+            tokenId: createdToken.id, actorId: beaconActor.id,
+            name: "Healing Beacon", img: data.tokenData.texture?.src ?? beaconActor.img,
+            apCurrent: data.initAP, apTotal: data.wil,
+            isNPC: true, conditions: [], turnDone: false,
+          });
+          await window.CTB.setState({ ...ctbState, combatants });
+        }
+        // Consume item and deduct AP on caster actor
+        const casterActor = game.actors.get(data.casterId);
+        if (casterActor) {
+          const beaconItem = casterActor.items.get(data.beaconItemId);
+          if (beaconItem) await beaconItem.update({ "system.qty": Math.max(0, (beaconItem.system.qty ?? 1) - 1) });
+          await casterActor.update({ "system.ctbAP": Math.max(-100, (casterActor.system.ctbAP ?? 0) - 100) });
+        }
       } else if (data.type === "deleteToken" && game.user.isGM) {
         const scene = game.scenes.active;
         if (!scene) return;
