@@ -2945,7 +2945,6 @@ const CTBEngine = {
       await actor.unsetFlag("dawnbreaker-trials", "tailwindStacks");
       await actor.setFlag("dawnbreaker-trials", "bleedStacks", 0);
       await actor.unsetFlag("dawnbreaker-trials", "myrBandageUsed");
-      // Reverse any WIL bonus applied by Myr's bandage ability
       const wilBonus = actor.getFlag("dawnbreaker-trials", "myrWILBonus");
       if (wilBonus?.active) {
         const curBonus = actor.system.stats?.WIL?.bonus ?? 0;
@@ -3326,6 +3325,9 @@ const CTBEngine = {
     await CTB.setState({ phase: "idle", combatants: [] });
     CTBDisplay.refresh();
     await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:6px;padding:10px;font-family:sans-serif;text-align:center;color:#d4d8e0;"><div style="font-size:16px;font-weight:700;color:#e8c86a;text-transform:uppercase;letter-spacing:2px;">🏳 Combat Ended</div></div>` });
+
+    // Clear Myr WIL bonus
+    await window._myrWILCleanup();
 
     // Stop all currently playing playlists (combat music etc)
     for (const pl of game.playlists.filter(p => p.playing)) {
@@ -3883,6 +3885,29 @@ Hooks.once("ready", () => {
 
     // GM-only handlers that don't require an actor
     if (game.user.isGM) {
+      if (data.type === "myrBandageApply") {
+        const tActor = game.actors.get(data.targetActorId);
+        const mActor = game.actors.get(data.myrActorId);
+        if (tActor) {
+          const curBonus = tActor.system.stats?.WIL?.bonus ?? 0;
+          await tActor.update({ "system.stats.WIL.bonus": curBonus + 2 });
+          await tActor.setFlag("dawnbreaker-trials", "myrWILBonus", { active: true, amount: 2 });
+        }
+        if (mActor) await mActor.setFlag("dawnbreaker-trials", "myrBandageUsed", true);
+        return;
+      }
+      if (data.type === "myrWILCleanup") {
+        for (const actor of game.actors.contents) {
+          const wilBonus = actor.getFlag("dawnbreaker-trials", "myrWILBonus");
+          if (wilBonus?.active) {
+            const curBonus = actor.system.stats?.WIL?.bonus ?? 0;
+            await actor.update({ "system.stats.WIL.bonus": Math.max(0, curBonus - wilBonus.amount) });
+            await actor.unsetFlag("dawnbreaker-trials", "myrWILBonus");
+          }
+          await actor.unsetFlag("dawnbreaker-trials", "myrBandageUsed");
+        }
+        return;
+      }
       if (data.type === "deployHealingBeacon") {
         const scene = game.scenes.active;
         if (!scene) return;
@@ -3982,6 +4007,24 @@ Hooks.once("ready", () => {
     }
     game.socket.emit("system.dawnbreaker-trials", { type: "deleteToken", tokenId });
     return Promise.resolve();
+  };
+
+  // Cleanup Myr WIL bonus — call at end of combat
+  window._myrWILCleanup = async function() {
+    if (game.user.isGM) {
+      for (const actor of game.actors.contents) {
+        const wilBonus = actor.getFlag("dawnbreaker-trials", "myrWILBonus");
+        if (wilBonus?.active) {
+          const curBonus = actor.system.stats?.WIL?.bonus ?? 0;
+          await actor.update({ "system.stats.WIL.bonus": Math.max(0, curBonus - wilBonus.amount) });
+          await actor.unsetFlag("dawnbreaker-trials", "myrWILBonus");
+        }
+        await actor.unsetFlag("dawnbreaker-trials", "myrBandageUsed");
+      }
+      ui.notifications.info("Myr WIL bonuses cleared.");
+    } else {
+      game.socket.emit("system.dawnbreaker-trials", { type: "myrWILCleanup" });
+    }
   };
 
   // Refresh CTB on resource changes
