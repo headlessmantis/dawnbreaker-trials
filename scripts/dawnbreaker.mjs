@@ -3828,31 +3828,9 @@ Hooks.once("ready", () => {
       return;
     }
 
-    if (!game.user.isGM && !actor?.isOwner) return;
-    if (game.user.isGM || !game.users.find(u => u.isGM && u.active)) {
-      if (!actor) return;
-      if (data.type === "applyDamage") {
-        await window._dbApplyDamage(data);
-      } else if (data.type === "applyARDamage") {
-        await window._dbApplyDamage(data);
-      } else if (data.type === "throwApply") {
-        await actor.update(data.updates);
-      } else if (data.type === "trapUpdate" && game.user.isGM) {
-        await game.settings.set("dawnbreaker-trials", "trapState", data.traps);
-        if (window.TrapSystem) TrapSystem.drawTraps();
-      } else if (data.type === "ctbEndTurn") {
-        await CTBEngine.endTurn(data.actorId, data.tokenId ?? null);
-      } else if (data.type === "moveToken" && game.user.isGM) {
-        const scene = game.scenes.active;
-        if (!scene) return;
-        const td = scene.tokens.get(data.tokenId);
-        if (!td) return;
-        await td.update({ x: data.x, y: data.y });
-      } else if (data.type === "createToken" && game.user.isGM) {
-        const scene = game.scenes.active;
-        if (!scene) return;
-        await scene.createEmbeddedDocuments("Token", [data.tokenData]);
-      } else if (data.type === "deployHealingBeacon" && game.user.isGM) {
+    // GM-only handlers that don't require an actor
+    if (game.user.isGM) {
+      if (data.type === "deployHealingBeacon") {
         const scene = game.scenes.active;
         if (!scene) return;
         const [createdToken] = await scene.createEmbeddedDocuments("Token", [data.tokenData]);
@@ -3860,9 +3838,8 @@ Hooks.once("ready", () => {
         const beaconCanvasToken = canvas.tokens.placeables.find(t => t.document.id === createdToken.id);
         const beaconActor = beaconCanvasToken?.actor;
         if (beaconActor) {
-          if (data.spawnAnimFile && window._playHitAnimation && beaconCanvasToken) {
+          if (data.spawnAnimFile && window._playHitAnimation && beaconCanvasToken)
             await window._playHitAnimation(beaconCanvasToken, data.spawnAnimFile, data.spawnAnimScale, data.spawnAnimSound, null);
-          }
           await beaconActor.setFlag("dawnbreaker-trials", "healingBeacon", {
             active: true, turns: 0,
             animFile: data.spawnAnimFile, animScale: data.spawnAnimScale, animSound: data.spawnAnimSound,
@@ -3879,18 +3856,50 @@ Hooks.once("ready", () => {
           });
           await window.CTB.setState({ ...ctbState, combatants });
         }
-        // Consume item and deduct AP on caster actor
         const casterActor = game.actors.get(data.casterId);
         if (casterActor) {
           const beaconItem = casterActor.items.get(data.beaconItemId);
           if (beaconItem) await beaconItem.update({ "system.qty": Math.max(0, (beaconItem.system.qty ?? 1) - 1) });
           await casterActor.update({ "system.ctbAP": Math.max(-100, (casterActor.system.ctbAP ?? 0) - 100) });
         }
-      } else if (data.type === "deleteToken" && game.user.isGM) {
+        return;
+      }
+      if (data.type === "moveToken") {
+        const scene = game.scenes.active;
+        if (!scene) return;
+        const td = scene.tokens.get(data.tokenId);
+        if (td) await td.update({ x: data.x, y: data.y });
+        return;
+      }
+      if (data.type === "createToken") {
+        const scene = game.scenes.active;
+        if (!scene) return;
+        await scene.createEmbeddedDocuments("Token", [data.tokenData]);
+        return;
+      }
+      if (data.type === "deleteToken") {
         const scene = game.scenes.active;
         if (!scene) return;
         const td = scene.tokens.get(data.tokenId);
         if (td) await td.delete();
+        return;
+      }
+    }
+
+    if (!game.user.isGM && !actor?.isOwner) return;
+    if (game.user.isGM || !game.users.find(u => u.isGM && u.active)) {
+      if (!actor) return;
+      if (data.type === "applyDamage") {
+        await window._dbApplyDamage(data);
+      } else if (data.type === "applyARDamage") {
+        await window._dbApplyDamage(data);
+      } else if (data.type === "throwApply") {
+        await actor.update(data.updates);
+      } else if (data.type === "trapUpdate" && game.user.isGM) {
+        await game.settings.set("dawnbreaker-trials", "trapState", data.traps);
+        if (window.TrapSystem) TrapSystem.drawTraps();
+      } else if (data.type === "ctbEndTurn") {
+        await CTBEngine.endTurn(data.actorId, data.tokenId ?? null);
       }
     }
   });
