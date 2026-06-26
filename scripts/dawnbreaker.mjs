@@ -353,6 +353,22 @@ class DawnbreakerActor extends Actor {
         for (const key of Object.keys(eb)) eb[key] += (s.bonuses[key] ?? 0);
       }
       this.system._equippedBonuses = eb;
+
+      // Resolve primary equipped weapon (weapon > offhand) for macros to read
+      const pw = this.items.find(i => i.type === "weapon" && i.system?.equipped)
+              ?? this.items.find(i => i.type === "offhand" && i.system?.equipped)
+              ?? null;
+      this.system._equippedWeapon = pw ? {
+        id:             pw.id,
+        name:           pw.name,
+        weaponType:     pw.system.weaponType ?? "",
+        attackStat:     pw.system.attackStat ?? "STR",
+        reach:          pw.system.reach      ?? 1,
+        dam:            pw.system.bonuses?.dam ?? 0,
+        animationFile:  pw.system.animationFile  ?? "",
+        animationScale: pw.system.animationScale ?? 1.0,
+        animationSound: pw.system.animationSound ?? "",
+      } : null;
     }
     super.prepareData();
 
@@ -491,9 +507,8 @@ class DawnbreakerActor extends Actor {
     data.prof = { ...(s.weaponProf ?? {}) };
 
     // ── Equipped weapon info ──
-    const equippedWeapon = this.items.find(i =>
-      (i.type === "weapon" || i.type === "offhand") && i.system?.equipped
-    );
+    const equippedWeapon = this.items.find(i => i.type === "weapon" && i.system?.equipped)
+                        ?? this.items.find(i => i.type === "offhand" && i.system?.equipped);
     if (equippedWeapon) {
       const wt  = equippedWeapon.system.weaponType ?? "";
       const atk = equippedWeapon.system.attackStat ?? "STR";
@@ -861,6 +876,7 @@ class DawnbreakerNPCData extends foundry.abstract.TypeDataModel {
       })),
 
       ctbAP:          new fields.NumberField({ required: true, nullable: false, initial: 0 }),
+      reach:          new fields.NumberField({ required: true, nullable: false, initial: 1, integer: true, min: 1 }),
     };
   }
 }
@@ -3826,9 +3842,25 @@ Hooks.once("ready", () => {
         if (window.TrapSystem) TrapSystem.drawTraps();
       } else if (data.type === "ctbEndTurn") {
         await CTBEngine.endTurn(data.actorId, data.tokenId ?? null);
+      } else if (data.type === "moveToken" && game.user.isGM) {
+        const scene = game.scenes.active;
+        if (!scene) return;
+        const td = scene.tokens.get(data.tokenId);
+        if (!td) return;
+        await td.update({ x: data.x, y: data.y });
       }
     }
   });
+
+  // Expose socket helper so macros can request GM token moves without ownership
+  window._gmMoveToken = function(tokenId, x, y) {
+    if (game.user.isGM) {
+      const td = game.scenes.active?.tokens.get(tokenId);
+      return td ? td.update({ x, y }) : Promise.resolve();
+    }
+    game.socket.emit("system.dawnbreaker-trials", { type: "moveToken", tokenId, x, y });
+    return Promise.resolve();
+  };
 
   // Refresh CTB on resource changes
   Hooks.on("updateActor", async (actor, changes) => {
