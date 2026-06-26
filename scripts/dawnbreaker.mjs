@@ -2764,7 +2764,7 @@ class CTBDisplay extends foundry.appv1.api.Application {
   static _anchorToHUD(app) {
     const hud = document.querySelector("#ib-hud-layer");
     const top = hud ? hud.getBoundingClientRect().top : 60;
-    app.setPosition({ left: 330, top });
+    app.setPosition({ left: 350, top });
   }
   getData() {
     const state = CTB.getState();
