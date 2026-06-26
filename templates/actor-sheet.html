@@ -503,13 +503,11 @@
     <div class="no-items-msg">No items yet — drag from the Items Directory to add them.</div>
     {{/if}}
 
-    <div class="section-title" style="margin-top:1rem">Crafting Materials</div>
+    <div class="section-title" style="margin-top:1rem">Stored Materials</div>
     <div class="crafting-grid">
-      <div class="craft-item"><label>Ore</label><input type="number" name="system.crafting.ore" value="{{system.crafting.ore}}" min="0"/></div>
       <div class="craft-item"><label>Leather</label><input type="number" name="system.crafting.leather" value="{{system.crafting.leather}}" min="0"/></div>
       <div class="craft-item"><label>Fabric</label><input type="number" name="system.crafting.fabric" value="{{system.crafting.fabric}}" min="0"/></div>
       <div class="craft-item"><label>Wood</label><input type="number" name="system.crafting.wood" value="{{system.crafting.wood}}" min="0"/></div>
-      <div class="craft-item"><label>Ores</label><input type="number" name="system.crafting.ores" value="{{system.crafting.ores}}" min="0"/></div>
       <div class="craft-item"><label>Rations</label><input type="number" name="system.crafting.rations" value="{{system.crafting.rations}}" min="0"/></div>
       <div class="craft-item"><label>Scrap</label><input type="number" name="system.crafting.scrap" value="{{system.crafting.scrap}}" min="0"/></div>
       <div class="craft-item"><label>Runes</label><input type="number" name="system.crafting.runes" value="{{system.crafting.runes}}" min="0"/></div>
@@ -545,9 +543,9 @@
 
     <div class="section-title" style="margin-top:1rem">Weapon Proficiencies <span style="font-size:9px;color:#7a8090;text-transform:none;letter-spacing:0;font-weight:400">(ATK/DMG +1 per level — each level lowers glancing blow chance)</span></div>
     <div class="weapon-prof-grid">
-      {{#each system.weaponProf as |level key|}}
+      {{#each weaponProfDisplay}}
       <div class="weapon-prof-item">
-        <label>{{key}}</label>
+        <label>{{label}}</label>
         <input type="number" name="system.weaponProf.{{key}}" value="{{level}}" min="0"/>
       </div>
       {{/each}}
