@@ -4,8 +4,8 @@
   "description": "Custom character sheet system for Dawnbreaker Trials.",
   "version": "1.0.0",
   "compatibility": {
-    "minimum": "12",
-    "verified": "13"
+    "minimum": "13",
+    "verified": "14"
   },
   "authors": [{"name": "Custom Build"}],
   "esmodules": ["scripts/dawnbreaker.mjs"],
