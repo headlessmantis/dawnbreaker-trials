@@ -1882,6 +1882,20 @@ async function _checkReactiveItems(actor, attackType) {
 // Apply Down condition when HP hits 0
 async function _applyDownCondition(actor) {
   if (!actor) return;
+
+  // Healing Beacon — destroy immediately on any hit instead of going Down
+  const beaconData = actor.getFlag("dawnbreaker-trials", "healingBeacon");
+  if (beaconData?.active) {
+    const ctbState = window.CTB.getState();
+    const token = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
+    const tokenId = token?.document?.id ?? token?.id;
+    const newCombatants = (ctbState.combatants ?? []).filter(c => c.tokenId !== tokenId);
+    await CTB.setState({ ...ctbState, combatants: newCombatants });
+    await token?.document?.delete();
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">💥 <b>Healing Beacon</b> was destroyed!</div>` });
+    return;
+  }
+
   const conditions = foundry.utils.deepClone(actor.system.conditions ?? []);
   if (conditions.some(c => c.name?.toLowerCase() === "down")) return;
   conditions.push({ name: "Down", label: "down", duration: 3, effect: "Unit is incapacitated. Removed from combat after 3 turns." });
