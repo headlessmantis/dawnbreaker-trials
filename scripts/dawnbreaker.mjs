@@ -3435,13 +3435,33 @@ class TargetSelector extends foundry.appv1.api.Application {
     const origX = Math.round(attackerToken.document.x/size), origY = Math.round(attackerToken.document.y/size);
     const visited = new Set(), queue = [{ x: origX, y: origY, dist: 0 }];
     visited.add(`${origX},${origY}`);
+    const allTokens = canvas.tokens.placeables;
     while (queue.length) {
       const { x, y, dist } = queue.shift();
       if (dist > 0) canvas.interface.grid.highlightPosition("crucible.range", { x: x*size, y: y*size, color: 0xff2222, border: 0xcc0000, alpha: 0.18 });
       if (dist >= this._reach) continue;
       for (const n of [{ x: x+1, y }, { x: x-1, y }, { x, y: y+1 }, { x, y: y-1 }]) {
         const k = `${n.x},${n.y}`;
-        if (!visited.has(k)) { visited.add(k); queue.push({ ...n, dist: dist+1 }); }
+        if (visited.has(k)) continue;
+        // Wall check
+        let wallBlocked = false;
+        try {
+          const from = { x: x*size + size/2, y: y*size + size/2 };
+          const to   = { x: n.x*size + size/2, y: n.y*size + size/2 };
+          wallBlocked = CONFIG.Canvas.polygonBackends.move.testCollision(from, to, { type: "move", mode: "any" });
+        } catch(e) {
+          try { wallBlocked = canvas.walls.checkCollision(new Ray({ x: x*size+size/2, y: y*size+size/2 }, { x: n.x*size+size/2, y: n.y*size+size/2 }), { type: "move" }); } catch(e2) {}
+        }
+        if (wallBlocked) continue;
+        // Enemy token blocks further expansion
+        const tokenBlocked = allTokens.some(t => {
+          if (t.id === attackerToken.id) return false;
+          if (t.document.disposition === attackerToken.document.disposition) return false;
+          return Math.round(t.document.x/size) === n.x && Math.round(t.document.y/size) === n.y;
+        });
+        visited.add(k);
+        queue.push({ ...n, dist: dist + 1 });
+        if (tokenBlocked) continue; // highlight tile but don't expand past enemy
       }
     }
   }
