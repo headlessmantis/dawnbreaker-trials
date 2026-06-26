@@ -190,7 +190,7 @@ class DawnbreakerCharacterData extends foundry.abstract.TypeDataModel {
         staff:      new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
         tome:       new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
         shield:     new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
-        shortbow:   new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
+        bow:        new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
         gun:        new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
         gauntlet:   new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
         whip:       new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
@@ -352,10 +352,27 @@ class DawnbreakerActor extends Actor {
         if (!s?.equipped || !s?.bonuses) continue;
         for (const key of Object.keys(eb)) eb[key] += (s.bonuses[key] ?? 0);
       }
+      // Dual Wield bonus — applied to eb before derived data runs
+      const dualWieldProf = this.system.weaponProf?.dualwield ?? 0;
+      if (dualWieldProf > 0) {
+        const mainW = this.items.find(i => i.type === "weapon" && i.system?.equipped && i.system.slot !== "offhand")
+                   ?? this.items.find(i => i.type === "weapon" && i.system?.equipped);
+        const offW  = this.items.find(i => i.type === "weapon" && i.system?.equipped && i.system.slot === "offhand");
+        if (mainW && offW) {
+          const offType = offW.system.weaponType?.toLowerCase() ?? "";
+          const offProficient = (this.system.weaponProf?.[offType] ?? 0) > 0;
+          if (offProficient) {
+            eb.pr += dualWieldProf;  // Proficient off-hand: +PR per Dual Wield point
+          } else {
+            eb.dam += dualWieldProf; // Not proficient: +1 damage per Dual Wield point
+          }
+        }
+      }
       this.system._equippedBonuses = eb;
 
-      // Resolve primary equipped weapon (weapon > offhand) for macros to read
-      const pw = this.items.find(i => i.type === "weapon" && i.system?.equipped)
+      // Resolve primary equipped weapon (main hand preferred, falls back to offhand type)
+      const pw = this.items.find(i => i.type === "weapon" && i.system?.equipped && i.system.slot !== "offhand")
+              ?? this.items.find(i => i.type === "weapon" && i.system?.equipped)
               ?? this.items.find(i => i.type === "offhand" && i.system?.equipped)
               ?? null;
       this.system._equippedWeapon = pw ? {
@@ -368,6 +385,22 @@ class DawnbreakerActor extends Actor {
         animationFile:  pw.system.animationFile  ?? "",
         animationScale: pw.system.animationScale ?? 1.0,
         animationSound: pw.system.animationSound ?? "",
+      } : null;
+
+      // Resolve off-hand weapon (dual-wield weapon in offhand slot, or offhand-type item)
+      const ohw = this.items.find(i => i.type === "weapon" && i.system?.equipped && i.system.slot === "offhand")
+               ?? this.items.find(i => i.type === "offhand" && i.system?.equipped)
+               ?? null;
+      this.system._equippedOffHandWeapon = ohw ? {
+        id:             ohw.id,
+        name:           ohw.name,
+        weaponType:     ohw.system.weaponType ?? "",
+        attackStat:     ohw.system.attackStat ?? "STR",
+        reach:          ohw.system.reach      ?? 1,
+        dam:            ohw.system.bonuses?.dam ?? 0,
+        animationFile:  ohw.system.animationFile  ?? "",
+        animationScale: ohw.system.animationScale ?? 1.0,
+        animationSound: ohw.system.animationSound ?? "",
       } : null;
     }
     super.prepareData();
@@ -505,6 +538,8 @@ class DawnbreakerActor extends Actor {
 
     // ── Weapon Proficiencies ──
     data.prof = { ...(s.weaponProf ?? {}) };
+    const PROF_LABELS = { sword:"Sword", dagger:"Dagger", longspear:"Longspear", greatsword:"Greatsword", mace:"Mace", warhammer:"Warhammer", axe:"Axe", staff:"Staff", tome:"Tome", shield:"Shield", bow:"Bows", gun:"Gun", gauntlet:"Gauntlet", whip:"Whip", wand:"Wand", dualwield:"Dual Wield", unarmed:"Unarmed", other:"Other" };
+    data.weaponProfDisplay = Object.entries(s.weaponProf ?? {}).map(([key, level]) => ({ key, label: PROF_LABELS[key] ?? key, level }));
 
     // ── Equipped weapon info ──
     const equippedWeapon = this.items.find(i => i.type === "weapon" && i.system?.equipped)
@@ -629,10 +664,50 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     });
 
     // Equip toggle
-    html.find(".item-equip-toggle").change(ev => {
+    html.find(".item-equip-toggle").change(async ev => {
       const id      = ev.currentTarget.closest("[data-item-id]").dataset.itemId;
       const equipped = ev.currentTarget.checked;
-      this.actor.items.get(id)?.update({ "system.equipped": equipped });
+      const item    = this.actor.items.get(id);
+      if (!item) return;
+
+      // Dual Wield: if equipping a weapon while another is already in main hand, ask slot
+      if (equipped && item.type === "weapon") {
+        const dualWieldProf = this.actor.system.weaponProf?.dualwield ?? 0;
+        const hasMainHand   = this.actor.items.some(i =>
+          i.id !== id && i.type === "weapon" && i.system?.equipped && i.system.slot !== "offhand"
+        );
+        if (dualWieldProf > 0 && hasMainHand) {
+          const choice = await new Promise(resolve => {
+            new (foundry.appv1?.applications?.Dialog ?? Dialog)({
+              title: "Dual Wield — Equip Slot",
+              content: `<p style="font-family:sans-serif;font-size:13px;padding:6px 0;">Where do you want to equip <b>${item.name}</b>?</p>`,
+              buttons: {
+                main:    { label: "Main Hand",  callback: () => resolve("main") },
+                offhand: { label: "Off-Hand",   callback: () => resolve("offhand") },
+                cancel:  { label: "Cancel",     callback: () => resolve(null) },
+              },
+              default: "main",
+              close: () => resolve(null),
+            }).render(true);
+          });
+          if (!choice) { ev.currentTarget.checked = false; return; }
+          if (choice === "offhand") {
+            await item.update({ "system.equipped": true, "system.slot": "offhand" });
+            return;
+          }
+          // Main hand chosen — clear slot override and equip normally
+          await item.update({ "system.equipped": true, "system.slot": "" });
+          return;
+        }
+      }
+
+      // Unequipping a dual-wield off-hand weapon — clear the slot override too
+      if (!equipped && item.type === "weapon" && item.system.slot === "offhand") {
+        await item.update({ "system.equipped": false, "system.slot": "" });
+        return;
+      }
+
+      item.update({ "system.equipped": equipped });
     });
 
     // Qty change
