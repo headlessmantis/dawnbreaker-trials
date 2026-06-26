@@ -1467,32 +1467,34 @@ Hooks.on("updateToken", async (tokenDoc, changes) => {
 // Returns { blocked: bool, blockingToken: Token|null, tilesTraversed: number }
 window._checkRangedLOS = function(fromToken, toToken, ignoreTokens = false) {
   if (!fromToken || !toToken) return { blocked: false, blockingToken: null, tilesTraversed: 0 };
-  const size  = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
-  const fx    = Math.round(fromToken.document.x / size);
-  const fy    = Math.round(fromToken.document.y / size);
-  const tx    = Math.round(toToken.document.x / size);
-  const ty    = Math.round(toToken.document.y / size);
-  const dx    = tx - fx;
-  const dy    = ty - fy;
+  const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+  const fx   = Math.round(fromToken.document.x / size);
+  const fy   = Math.round(fromToken.document.y / size);
+  const tx   = Math.round(toToken.document.x / size);
+  const ty   = Math.round(toToken.document.y / size);
+  const dx   = tx - fx;
+  const dy   = ty - fy;
   const steps = Math.max(Math.abs(dx), Math.abs(dy));
   if (steps === 0) return { blocked: false, blockingToken: null, tilesTraversed: 0 };
 
-  const fromDisp = fromToken.document.disposition;
-
-  for (let i = 1; i < steps; i++) {
-    const cx = Math.round(fx + (dx / steps) * i);
-    const cy = Math.round(fy + (dy / steps) * i);
-
-    // Wall collision
+  // Full ray from source center to destination center — catches all wall types
+  const rayFrom = { x: fx * size + size / 2, y: fy * size + size / 2 };
+  const rayTo   = { x: tx * size + size / 2, y: ty * size + size / 2 };
+  try {
+    const wallHit = CONFIG.Canvas.polygonBackends.move.testCollision(rayFrom, rayTo, { type: "move", mode: "any" });
+    if (wallHit) return { blocked: true, blockingToken: null, tilesTraversed: steps };
+  } catch(e) {
     try {
-      const from = { x: (cx - 0.5) * size + size/2, y: (cy - 0.5) * size + size/2 };
-      const to   = { x: cx * size + size/2, y: cy * size + size/2 };
-      const wallHit = CONFIG.Canvas.polygonBackends.move.testCollision(from, to, { type: "move", mode: "any" });
-      if (wallHit) return { blocked: true, blockingToken: null, tilesTraversed: i };
-    } catch(e) {}
+      const wallHit = canvas.walls.checkCollision(new Ray(rayFrom, rayTo), { type: "move" });
+      if (wallHit) return { blocked: true, blockingToken: null, tilesTraversed: steps };
+    } catch(e2) {}
+  }
 
-    // Token collision (both allies and enemies block)
-    if (!ignoreTokens) {
+  // Token collision along path
+  if (!ignoreTokens) {
+    for (let i = 1; i < steps; i++) {
+      const cx = Math.round(fx + (dx / steps) * i);
+      const cy = Math.round(fy + (dy / steps) * i);
       const blockingToken = canvas.tokens.placeables.find(t => {
         if (t.id === fromToken.id || t.id === toToken.id) return false;
         return Math.round(t.document.x / size) === cx && Math.round(t.document.y / size) === cy;
@@ -1500,6 +1502,7 @@ window._checkRangedLOS = function(fromToken, toToken, ignoreTokens = false) {
       if (blockingToken) return { blocked: true, blockingToken, tilesTraversed: i };
     }
   }
+
   return { blocked: false, blockingToken: null, tilesTraversed: steps };
 };
 
