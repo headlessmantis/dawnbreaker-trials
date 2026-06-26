@@ -2984,7 +2984,10 @@ const CTBEngine = {
       if (!token) continue;
       const isActive = atTurn.some(a => a.tokenId === c.tokenId);
       await _highlightToken(token, isActive);
-      if (isActive) await _showMovementRange(token);
+      if (isActive) {
+        await _showMovementRange(token);
+        game.socket.emit("system.dawnbreaker-trials", { type: "showMovementRange", tokenId: c.tokenId });
+      }
     }
     for (const entry of atTurn) {
       const canvasToken = canvas.tokens.placeables.find(t => t.document?.id === entry.tokenId || t.id === entry.tokenId);
@@ -3709,6 +3712,11 @@ Hooks.once("ready", () => {
     }
     if (data.type === "ctbUpdate" || data.type === "castQueueUpdate") {
       CTBDisplay.refresh();
+      return;
+    }
+    if (data.type === "showMovementRange") {
+      const token = canvas.tokens.placeables.find(t => t.document?.id === data.tokenId || t.id === data.tokenId);
+      if (token) await _showMovementRange(token);
       return;
     }
 
