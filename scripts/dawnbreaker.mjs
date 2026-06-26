@@ -3848,17 +3848,43 @@ Hooks.once("ready", () => {
         const td = scene.tokens.get(data.tokenId);
         if (!td) return;
         await td.update({ x: data.x, y: data.y });
+      } else if (data.type === "createToken" && game.user.isGM) {
+        const scene = game.scenes.active;
+        if (!scene) return;
+        await scene.createEmbeddedDocuments("Token", [data.tokenData]);
+      } else if (data.type === "deleteToken" && game.user.isGM) {
+        const scene = game.scenes.active;
+        if (!scene) return;
+        const td = scene.tokens.get(data.tokenId);
+        if (td) await td.delete();
       }
     }
   });
 
-  // Expose socket helper so macros can request GM token moves without ownership
+  // Expose socket helpers so macros can request GM token ops without ownership
   window._gmMoveToken = function(tokenId, x, y) {
     if (game.user.isGM) {
       const td = game.scenes.active?.tokens.get(tokenId);
       return td ? td.update({ x, y }) : Promise.resolve();
     }
     game.socket.emit("system.dawnbreaker-trials", { type: "moveToken", tokenId, x, y });
+    return Promise.resolve();
+  };
+
+  window._gmCreateToken = function(tokenData) {
+    if (game.user.isGM) {
+      return game.scenes.active?.createEmbeddedDocuments("Token", [tokenData]) ?? Promise.resolve();
+    }
+    game.socket.emit("system.dawnbreaker-trials", { type: "createToken", tokenData });
+    return Promise.resolve();
+  };
+
+  window._gmDeleteToken = function(tokenId) {
+    if (game.user.isGM) {
+      const td = game.scenes.active?.tokens.get(tokenId);
+      return td ? td.delete() : Promise.resolve();
+    }
+    game.socket.emit("system.dawnbreaker-trials", { type: "deleteToken", tokenId });
     return Promise.resolve();
   };
 
