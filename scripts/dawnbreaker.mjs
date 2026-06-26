@@ -2944,6 +2944,14 @@ const CTBEngine = {
       await actor.unsetFlag("dawnbreaker-trials", "blessingOfLight");
       await actor.unsetFlag("dawnbreaker-trials", "tailwindStacks");
       await actor.setFlag("dawnbreaker-trials", "bleedStacks", 0);
+      await actor.unsetFlag("dawnbreaker-trials", "myrBandageUsed");
+      // Reverse any WIL bonus applied by Myr's bandage ability
+      const wilBonus = actor.getFlag("dawnbreaker-trials", "myrWILBonus");
+      if (wilBonus?.active) {
+        const curBonus = actor.system.stats?.WIL?.bonus ?? 0;
+        await actor.update({ "system.stats.WIL.bonus": Math.max(0, curBonus - wilBonus.amount) });
+        await actor.unsetFlag("dawnbreaker-trials", "myrWILBonus");
+      }
     }
     // Open CTB display on all clients
     game.socket.emit("system.dawnbreaker-trials", { type: "ctbOpen" });
