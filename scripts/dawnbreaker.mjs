@@ -548,9 +548,10 @@ class DawnbreakerActor extends Actor {
     const equippedWeapon = this.items.find(i => i.type === "weapon" && i.system?.equipped)
                         ?? this.items.find(i => i.type === "offhand" && i.system?.equipped);
     if (equippedWeapon) {
-      const wt  = equippedWeapon.system.weaponType ?? "";
-      const atk = equippedWeapon.system.attackStat ?? "STR";
-      const dam = equippedWeapon.system.bonuses?.dam ?? 0;
+      const wt      = equippedWeapon.system.weaponType ?? "";
+      const atk     = equippedWeapon.system.attackStat ?? "STR";
+      const dam     = equippedWeapon.system.bonuses?.dam ?? 0;
+      const ebDam   = s._equippedBonuses?.dam ?? 0;
       const profLevel = s.weaponProf?.[wt] ?? 0;
       data.weapon = {
         name:            equippedWeapon.name,
@@ -558,10 +559,10 @@ class DawnbreakerActor extends Actor {
         attackStat:      atk,
         dam:             dam,
         profLevel:       profLevel,
-        profBonus:       profLevel,       // ATK/DMG +1 per level
+        profBonus:       profLevel,
         atkBonus:        profLevel,
-        dmgBonus:        dam + profLevel, // base DAM + prof DMG bonus
-        hpDmgBonus:      profLevel,       // final HP damage +1 per level
+        dmgBonus:        dam + profLevel + ebDam, // base DAM + prof bonus + equipped bonuses (dual wield etc)
+        hpDmgBonus:      profLevel + ebDam,
         attackStatTotal: data[atk.toLowerCase()]?.total ?? 0,
       };
     } else {
