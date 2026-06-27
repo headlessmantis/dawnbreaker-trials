@@ -365,9 +365,10 @@ class DawnbreakerActor extends Actor {
         if (mainW && offW) {
           const offType = offW.system.weaponType?.toLowerCase() ?? "";
           const offProficient = (this.system.weaponProf?.[offType] ?? 0) > 0;
-          eb.dam += dualWieldProf;
+          this.system._dualWieldDam = dualWieldProf;       // stored separately, baked into weapon.dam in getRollData
           this.system._dualWieldPrecision = offProficient ? dualWieldProf : 0;
         } else {
+          this.system._dualWieldDam = 0;
           this.system._dualWieldPrecision = 0;
         }
       }
@@ -548,11 +549,12 @@ class DawnbreakerActor extends Actor {
     const equippedWeapon = this.items.find(i => i.type === "weapon" && i.system?.equipped)
                         ?? this.items.find(i => i.type === "offhand" && i.system?.equipped);
     if (equippedWeapon) {
-      const wt      = equippedWeapon.system.weaponType ?? "";
-      const atk     = equippedWeapon.system.attackStat ?? "STR";
-      const dam     = equippedWeapon.system.bonuses?.dam ?? 0;
-      const ebDam   = s._equippedBonuses?.dam ?? 0;
-      const profLevel = s.weaponProf?.[wt] ?? 0;
+      const wt          = equippedWeapon.system.weaponType ?? "";
+      const atk         = equippedWeapon.system.attackStat ?? "STR";
+      const rawDam      = equippedWeapon.system.bonuses?.dam ?? 0;
+      const dualWieldDam = s._dualWieldDam ?? 0;
+      const dam         = rawDam + dualWieldDam; // weapon.dam includes dual wield bonus so @weapon.dam in FORMULA picks it up
+      const profLevel   = s.weaponProf?.[wt] ?? 0;
       data.weapon = {
         name:            equippedWeapon.name,
         type:            wt,
@@ -561,8 +563,8 @@ class DawnbreakerActor extends Actor {
         profLevel:       profLevel,
         profBonus:       profLevel,
         atkBonus:        profLevel,
-        dmgBonus:        dam + profLevel + ebDam, // base DAM + prof bonus + equipped bonuses (dual wield etc)
-        hpDmgBonus:      profLevel + ebDam,
+        dmgBonus:        dam + profLevel,
+        hpDmgBonus:      profLevel + dualWieldDam,
         attackStatTotal: data[atk.toLowerCase()]?.total ?? 0,
       };
     } else {
