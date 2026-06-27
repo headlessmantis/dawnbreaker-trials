@@ -14,7 +14,7 @@
   "packs": [],
   "socket": true,
   "url": "https://github.com/headlessmantis/dawnbreaker-trials",
-  "manifest": "https://cdn.jsdelivr.net/gh/headlessmantis/dawnbreaker-trials@latest/system.json",
+  "manifest": "https://raw.githubusercontent.com/headlessmantis/dawnbreaker-trials/master/system.json",
   "download": "https://github.com/headlessmantis/dawnbreaker-trials/archive/refs/heads/master.zip",
   "documentTypes": {
     "Actor": {
