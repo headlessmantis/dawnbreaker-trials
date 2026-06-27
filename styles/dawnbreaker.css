@@ -1161,7 +1161,7 @@
 .dawnbreaker .combat-modifiers-row {
   display: flex;
   justify-content: center;
-  gap: 32px;
+  gap: 48px;
   margin-top: 14px;
   padding: 10px 0 4px;
   border-top: 1px solid #2a2d33;
@@ -1179,20 +1179,40 @@
   letter-spacing: 1px;
   color: #c8a84b;
 }
-.dawnbreaker .combat-mod-cell input[type="number"] {
-  width: 52px;
-  text-align: center;
-  font-size: 16px;
+.dawnbreaker .combat-mod-total {
+  font-size: 22px;
   font-weight: 700;
+  color: #d4d8e0;
+  line-height: 1;
+  min-width: 32px;
+  text-align: center;
+}
+.dawnbreaker .combat-mod-base-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+.dawnbreaker .combat-mod-base-lbl {
+  font-size: 9px;
+  color: #5a6070;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.dawnbreaker .combat-mod-base-row input[type="number"] {
+  width: 40px;
+  text-align: center;
+  font-size: 11px;
   background: #222428;
   border: 1px solid #3a3f4a;
-  border-radius: 4px;
-  color: #d4d8e0;
-  padding: 3px 0;
+  border-radius: 3px;
+  color: #7a8090;
+  padding: 1px 0;
 }
 .dawnbreaker .combat-mod-hint {
   font-size: 9px;
   color: #5a6070;
   text-align: center;
   letter-spacing: 0.3px;
+  margin-top: 1px;
 }

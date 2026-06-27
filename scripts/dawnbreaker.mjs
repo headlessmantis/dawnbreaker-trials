@@ -365,10 +365,10 @@ class DawnbreakerActor extends Actor {
         if (mainW && offW) {
           const offType = offW.system.weaponType?.toLowerCase() ?? "";
           const offProficient = (this.system.weaponProf?.[offType] ?? 0) > 0;
-          eb.dam += dualWieldProf; // Always: +1 damage per Dual Wield point
-          if (offProficient) {
-            this.system.precision = (this.system.precision ?? 0) + dualWieldProf; // Proficient off-hand: +Precision per Dual Wield point
-          }
+          eb.dam += dualWieldProf;
+          this.system._dualWieldPrecision = offProficient ? dualWieldProf : 0;
+        } else {
+          this.system._dualWieldPrecision = 0;
         }
       }
       this.system._equippedBonuses = eb;
@@ -641,6 +641,10 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     const s = actor.system;
     const PROF_LABELS = { sword:"Sword", dagger:"Dagger", longspear:"Longspear", greatsword:"Greatsword", mace:"Mace", warhammer:"Warhammer", axe:"Axe", staff:"Staff", tome:"Tome", shield:"Shield", bow:"Bows", gun:"Gun", gauntlet:"Gauntlet", whip:"Whip", wand:"Wand", dualwield:"Dual Wield", unarmed:"Unarmed", other:"Other" };
     context.weaponProfDisplay = Object.entries(s.weaponProf ?? {}).map(([key, level]) => ({ key, label: PROF_LABELS[key] ?? key, level }));
+
+    // Precision / Accuracy totals (base + computed bonuses)
+    context.precisionTotal = (s.precision ?? 0) + (s._dualWieldPrecision ?? 0);
+    context.accuracyTotal  = s.accuracy ?? 0;
 
     return context;
   }
