@@ -178,6 +178,10 @@ class DawnbreakerCharacterData extends foundry.abstract.TypeDataModel {
         effect:   new fields.StringField({ initial: "" }),
       })),
 
+      // Combat modifiers
+      precision: new fields.NumberField({ ...req, initial: 0, integer: true }),
+      accuracy:  new fields.NumberField({ ...req, initial: 0, integer: true }),
+
       // Weapon Proficiencies (each level = ATK/DMG +1, lowers glancing blow chance)
       weaponProf: new fields.SchemaField({
         sword:      new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),

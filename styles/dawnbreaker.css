@@ -1156,3 +1156,43 @@
   display: block;
   margin-top: 1px;
 }
+
+/* ── Precision / Accuracy combat modifiers ── */
+.dawnbreaker .combat-modifiers-row {
+  display: flex;
+  justify-content: center;
+  gap: 32px;
+  margin-top: 14px;
+  padding: 10px 0 4px;
+  border-top: 1px solid #2a2d33;
+}
+.dawnbreaker .combat-mod-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.dawnbreaker .combat-mod-cell .aff-lbl {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #c8a84b;
+}
+.dawnbreaker .combat-mod-cell input[type="number"] {
+  width: 52px;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 700;
+  background: #222428;
+  border: 1px solid #3a3f4a;
+  border-radius: 4px;
+  color: #d4d8e0;
+  padding: 3px 0;
+}
+.dawnbreaker .combat-mod-hint {
+  font-size: 9px;
+  color: #5a6070;
+  text-align: center;
+  letter-spacing: 0.3px;
+}

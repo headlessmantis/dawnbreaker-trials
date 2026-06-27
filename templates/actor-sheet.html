@@ -170,6 +170,19 @@
       {{/each}}
     </div>
 
+    <div class="combat-modifiers-row">
+      <div class="combat-mod-cell">
+        <span class="aff-lbl">Precision</span>
+        <input type="number" name="system.precision" value="{{system.precision}}"/>
+        <span class="combat-mod-hint">Lowers Crit Threshold</span>
+      </div>
+      <div class="combat-mod-cell">
+        <span class="aff-lbl">Accuracy</span>
+        <input type="number" name="system.accuracy" value="{{system.accuracy}}"/>
+        <span class="combat-mod-hint">Lowers Glancing Blow Threshold</span>
+      </div>
+    </div>
+
   </div>
 
   {{!-- ═══════════════ TAB: ABILITIES ═══════════════ --}}
