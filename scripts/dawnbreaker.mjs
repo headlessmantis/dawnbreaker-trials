@@ -633,6 +633,11 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     }
     context.paperdoll = paperdoll;
 
+    // Build weapon proficiency display array for the Classes tab
+    const s = actor.system;
+    const PROF_LABELS = { sword:"Sword", dagger:"Dagger", longspear:"Longspear", greatsword:"Greatsword", mace:"Mace", warhammer:"Warhammer", axe:"Axe", staff:"Staff", tome:"Tome", shield:"Shield", bow:"Bows", gun:"Gun", gauntlet:"Gauntlet", whip:"Whip", wand:"Wand", dualwield:"Dual Wield", unarmed:"Unarmed", other:"Other" };
+    context.weaponProfDisplay = Object.entries(s.weaponProf ?? {}).map(([key, level]) => ({ key, label: PROF_LABELS[key] ?? key, level }));
+
     return context;
   }
 
