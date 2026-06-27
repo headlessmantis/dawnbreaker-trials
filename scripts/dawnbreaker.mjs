@@ -365,10 +365,9 @@ class DawnbreakerActor extends Actor {
         if (mainW && offW) {
           const offType = offW.system.weaponType?.toLowerCase() ?? "";
           const offProficient = (this.system.weaponProf?.[offType] ?? 0) > 0;
+          eb.dam += dualWieldProf; // Always: +1 damage per Dual Wield point
           if (offProficient) {
-            eb.pr += dualWieldProf;  // Proficient off-hand: +PR per Dual Wield point
-          } else {
-            eb.dam += dualWieldProf; // Not proficient: +1 damage per Dual Wield point
+            this.system.precision = (this.system.precision ?? 0) + dualWieldProf; // Proficient off-hand: +Precision per Dual Wield point
           }
         }
       }
