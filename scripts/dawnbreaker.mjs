@@ -1536,6 +1536,27 @@ Hooks.on("updateToken", async (tokenDoc, changes) => {
     const token = canvas.tokens.placeables.find(t => t.document.id === tokenDoc.id);
     if (token && window.TrapSystem) await window.TrapSystem.checkTrigger(token, newGX, newGY);
   }
+
+  // Crystal Burrower tremor — play ground crack effect when burrowed and moving
+  if (changes.x !== undefined || changes.y !== undefined) {
+    const actor = tokenDoc.actor;
+    if (actor && actor.name.toLowerCase().includes("crystal burrower")) {
+      const isBurrowed = actor.getFlag("dawnbreaker-trials", "burrowed") ?? false;
+      if (isBurrowed && window.Sequence) {
+        const token = canvas.tokens.placeables.find(t => t.document.id === tokenDoc.id);
+        if (token) {
+          new Sequence()
+            .effect()
+              .atLocation(token)
+              .file("jb2a.ground_cracks.03.orange")
+              .scale(0.6)
+              .opacity(0.5)
+              .belowTokens()
+            .play();
+        }
+      }
+    }
+  }
 });
 
 // ── Ranged LOS — straight line, stops at first token or wall ──
