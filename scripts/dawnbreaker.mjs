@@ -6024,16 +6024,17 @@ class TargetSelector extends foundry.appv1.api.Application {
   async _render(force, options) {
     await super._render(force, options);
     if (force) {
-      // Anchor beneath the action menu. Position after a short settle so
-      // the window's own auto-sizing doesn't override it.
+      // Append to the right of the rightmost visible DBT HUD column
+      // (party bar → action menu → submenu), top-aligned with it. Settle
+      // delay so the window's own auto-sizing doesn't override the position.
       setTimeout(() => {
-        // DBT's own action menu (dawnbreaker-hud.mjs), falling back to the
-        // party HUD root, then the CTB panel
-        const anchor = document.getElementById("dbt-hud-root")
-          ?? document.getElementById("dbt-party-root");
-        if (anchor) {
-          const rect = anchor.getBoundingClientRect();
-          this.setPosition({ left: rect.left, top: rect.bottom + 8 });
+        const hudEls = ["dbt-hud-sub", "dbt-hud-root", "dbt-party-root"]
+          .map(id => document.getElementById(id))
+          .filter(el => el && el.offsetParent !== null); // visible only
+        if (hudEls.length) {
+          const rects = hudEls.map(el => el.getBoundingClientRect());
+          const rightmost = rects.reduce((a, b) => (b.right > a.right ? b : a));
+          this.setPosition({ left: rightmost.right + 8, top: rightmost.top });
         } else {
           const ctb = CTBDisplay.getInstance();
           if (ctb?.rendered) {
