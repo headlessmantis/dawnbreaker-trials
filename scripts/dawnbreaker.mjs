@@ -354,6 +354,13 @@ class DawnbreakerActor extends Actor {
   prepareData() {
     super.prepareData();
 
+    // Unlinked duplicate tokens share the base actor's name — surface the
+    // TOKEN's name (e.g. "Crystal Burrower 3") everywhere actor.name is
+    // displayed: chat cards, dialogs, target lists, CTB panel, damage logs.
+    if (this.isToken && this.token?.name && this.name !== this.token.name) {
+      this.name = this.token.name;
+    }
+
     // Apply equipped item bonuses to already-derived character stats
     if (this.type === 'character' && this.system) {
       const eb = { dam:0, str:0, con:0, agi:0, dex:0, int:0, spr:0,
