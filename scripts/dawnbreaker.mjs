@@ -6162,8 +6162,11 @@ class TargetSelector extends foundry.appv1.api.Application {
       if (!t.actor) continue;
       // Exclude the attacker's own token by token identity, not actor id —
       // unlinked duplicate tokens (e.g. multiple Golem Sentries) share the
-      // same actor id and must remain individually targetable.
-      if (attackerToken ? t.id === attackerToken.id : t.actor.id === attacker?.id) continue;
+      // same actor id and must remain individually targetable. Self stays
+      // targetable for ally/any abilities (heals, buffs) — only excluded
+      // from enemy-targeting attacks.
+      const isSelf = attackerToken ? t.id === attackerToken.id : t.actor.id === attacker?.id;
+      if (isSelf && this._targetType === "enemy") continue;
 
       // If attacker is threatened, only show the threatening actor regardless of range/type
       if (threatenedByActorId) {
