@@ -3639,10 +3639,10 @@ const TrapSystem = {
         if (action === "damage") {
           if (stat === "hp") {
             const cur = actor.system.hp?.current ?? 0;
-            await window._dbApplyDamage({ type: "applyDamage", actorId: actor.id, newHP: Math.max(0, cur - val), attackType: "physical" });
+            await window._dbApplyDamage({ type: "applyDamage", actorId: actor.id, tokenId: token.document?.id ?? token.id, newHP: Math.max(0, cur - val), attackType: "physical" });
           } else if (stat === "ar") {
             const cur = actor.system.ar?.current ?? 0;
-            await window._dbApplyDamage({ type: "applyARDamage", actorId: actor.id, newAR: Math.max(0, cur - val), attackType: "physical" });
+            await window._dbApplyDamage({ type: "applyARDamage", actorId: actor.id, tokenId: token.document?.id ?? token.id, newAR: Math.max(0, cur - val), attackType: "physical" });
           }
         } else if (action === "condition") {
           const conditions = foundry.utils.deepClone(actor.system.conditions ?? []);
@@ -4303,7 +4303,7 @@ const DB_REACTIONS = {
 
           const curHP   = targetActor.system.hp?.current ?? 0;
           const newHP   = Math.max(0, curHP - finalDmg);
-          const cData   = { type: "applyDamage", actorId: targetActor.id, newHP, attackType: "physical" };
+          const cData   = { type: "applyDamage", actorId: targetActor.id, tokenId: attackerToken.document?.id ?? attackerToken.id, newHP, attackType: "physical" };
           if (game.user.isGM) await window._dbApplyDamage(cData);
           else game.socket.emit("system.dawnbreaker-trials", cData);
 
@@ -4362,7 +4362,7 @@ const DB_REACTIONS = {
         const oldAR = actor.system.ar?.current ?? 0;
         return oldAR > 21 && finalNewAR <= 21;
       },
-      async handler(actor, finalNewAR, attackType, sourceActorId) {
+      async handler(actor, finalNewAR, attackType, sourceActorId, sourceTokenId = null) {
         await actor.setFlag("dawnbreaker-trials", "shellUsed", true);
         // BP1 side effects: PR 12 → 6, apply weakened as visual indicator
         await actor.update({ "system.stats.PR": 6 });
@@ -4372,14 +4372,16 @@ const DB_REACTIONS = {
           await actor.update({ "system.conditions": bp1Conds });
           await _applyStatusEffect(actor, "weakened", true);
         }
-        // Counter: 8 flat AR to the BRK attacker who cracked the shell
-        if (sourceActorId) {
-          const srcToken = canvas.tokens?.placeables?.find(t => t.actor?.id === sourceActorId);
+        // Counter: 8 flat AR to the BRK attacker who cracked the shell —
+        // prefer the exact attacking token (duplicates share actor ids)
+        if (sourceActorId || sourceTokenId) {
+          const srcToken = (sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === sourceTokenId) : null)
+            ?? canvas.tokens?.placeables?.find(t => t.actor?.id === sourceActorId);
           const srcActor = srcToken?.actor ?? game.actors.get(sourceActorId);
           if (srcActor) {
             const curAR = srcActor.system.ar?.current ?? 0;
             const newAR = Math.max(0, curAR - 8);
-            await window._dbApplyDamage({ type: "applyARDamage", actorId: srcActor.id, newAR, attackType: "physical", sourceActorId: actor.id });
+            await window._dbApplyDamage({ type: "applyARDamage", actorId: srcActor.id, tokenId: srcToken?.document?.id ?? srcToken?.id, newAR, attackType: "physical", sourceActorId: actor.id });
             await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#64b5f6;border-bottom:1px solid #3a3f4a;padding-bottom:4px;margin-bottom:8px;">💎 Crystal Shell — ${actor.name} CRACKS!</div><div style="font-size:12px;"><b>${srcActor.name}</b> takes <span style="color:#e57373;font-weight:700;">8 AR damage</span> from the shard spray!</div><div style="font-size:12px;margin-top:4px;">⚠ ${actor.name} PR reduced: 12 → 6. Shell is compromised.</div></div>` });
           }
         }
@@ -4468,13 +4470,15 @@ async function _handleCrystalBurrowerBreakpoints(actor, oldAR, newAR) {
     const bx   = Math.round(bToken.document.x / size);
     const by   = Math.round(bToken.document.y / size);
     for (const t of canvas.tokens.placeables) {
-      if (!t.actor || t.actor.id === actor.id) continue;
+      // Exclude only the bursting token itself — duplicate unlinked tokens
+      // share actor ids and must still be hit by the burst.
+      if (!t.actor || t.id === bToken.id) continue;
       const tx = Math.round(t.document.x / size);
       const ty = Math.round(t.document.y / size);
       if (Math.abs(tx - bx) > 2 || Math.abs(ty - by) > 2) continue;
       const curHP = t.actor.system.hp?.current ?? 0;
       const newHP = Math.max(0, curHP - 8);
-      await window._dbApplyDamage({ type: "applyDamage", actorId: t.actor.id, newHP, attackType: "physical", sourceActorId: actor.id });
+      await window._dbApplyDamage({ type: "applyDamage", actorId: t.actor.id, tokenId: t.document?.id ?? t.id, newHP, attackType: "physical", sourceActorId: actor.id });
       shardHit.push(t.actor.name);
     }
   }
@@ -4822,7 +4826,7 @@ window._dbApplyDamage = async (data) => {
           const curAR2 = attackerToken3.actor.system.ar?.current ?? 0;
           const newAR2 = Math.max(0, curAR2 - arDmg);
           await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🎯 <b>Cover Fire</b> — <b>${cfActor.name}</b> fires at <b>${attackerToken3.actor.name}</b>! AR −${arDmg} (BRK: ${cfBRK})</div>` });
-          await window._dbApplyDamage({ type: "applyARDamage", actorId: attackerToken3.actor.id, sourceActorId: cfActor.id, newAR: newAR2, attackType: "physical" });
+          await window._dbApplyDamage({ type: "applyARDamage", actorId: attackerToken3.actor.id, tokenId: attackerToken3.document?.id ?? attackerToken3.id, sourceActorId: cfActor.id, newAR: newAR2, attackType: "physical" });
           const cfAP = cfActor.system.ctbAP ?? 0;
           await cfActor.update({ "system.ctbAP": Math.max(-100, cfAP - 30) });
         }
@@ -4854,7 +4858,7 @@ window._dbApplyDamage = async (data) => {
       const guardedARDmg = await _checkARGuardCondition(actor, arDmgAmount);
       finalNewAR = Math.max(0, currentAR - guardedARDmg);
     }
-    const { handled, finalDmg: reactionAR } = await _runReactions("onArDamage", actor, finalNewAR, data.attackType, data.sourceActorId);
+    const { handled, finalDmg: reactionAR } = await _runReactions("onArDamage", actor, finalNewAR, data.attackType, data.sourceActorId, data.sourceTokenId);
     if (handled) return;
     const actualARDmg = currentAR - reactionAR;
     await actor.update({ "system.ar.current": reactionAR });
@@ -5671,13 +5675,14 @@ const CTBEngine = {
     if (burrowedFlag) {
       await actor.unsetFlag("dawnbreaker-trials", "burrowed");
       await actor.setFlag("dawnbreaker-trials", "tunnelAmbush", true);
-      const bToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
+      const bToken = (callerTokenId ? canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === callerTokenId) : null)
+        ?? canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
       if (bToken) {
         const size       = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
         const bx         = Math.round(bToken.document.x / size);
         const by         = Math.round(bToken.document.y / size);
         const nearTokens = canvas.tokens.placeables.filter(t => {
-          if (!t.actor || t.actor.id === actor.id) return false;
+          if (!t.actor || t.id === bToken.id) return false;
           const tx = Math.round(t.document.x / size);
           const ty = Math.round(t.document.y / size);
           return Math.abs(tx - bx) <= 1 && Math.abs(ty - by) <= 1;
@@ -5685,7 +5690,7 @@ const CTBEngine = {
         for (const t of nearTokens) {
           const curHP = t.actor.system.hp?.current ?? 0;
           const newHP = Math.max(0, curHP - 8);
-          await window._dbApplyDamage({ type: "applyDamage", actorId: t.actor.id, newHP, attackType: "physical", sourceActorId: actor.id });
+          await window._dbApplyDamage({ type: "applyDamage", actorId: t.actor.id, tokenId: t.document?.id ?? t.id, newHP, attackType: "physical", sourceActorId: actor.id });
           const eConds = foundry.utils.deepClone(t.actor.system.conditions ?? []);
           if (!eConds.some(c => c.name === "prone")) {
             eConds.push({ name: "prone", label: "prone", duration: 2, instance: 0, effect: "" });
@@ -5752,12 +5757,12 @@ const CTBEngine = {
         const curAR = actor.system.ar?.current ?? 0;
         const newAR = Math.max(0, curAR - dotAmt);
         if (game.user.isGM) await actor.update({ "system.ar.current": newAR });
-        else game.socket.emit("system.dawnbreaker-trials", { type: "throwApply", actorId: actor.id, updates: { "system.ar.current": newAR } });
+        else game.socket.emit("system.dawnbreaker-trials", { type: "throwApply", actorId: actor.id, tokenId: callerTokenId ?? undefined, updates: { "system.ar.current": newAR } });
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #81c784;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🌿 <b>${c.name}</b> — <b>${actor.name}</b> 🛡 AR: <span style="color:#64b5f6;">${curAR}</span> → <span style="color:${newAR<=0?"#e05555":"#81c784"};font-weight:700;">${newAR}</span> (−${dotAmt})</div>` });
       } else if (dotType === "hp") {
         const curHP = actor.system.hp?.current ?? 0;
         const newHP = Math.max(0, curHP - dotAmt);
-        const data  = { type: "applyDamage", actorId: actor.id, newHP, attackType: "magical" };
+        const data  = { type: "applyDamage", actorId: actor.id, tokenId: callerTokenId ?? undefined, newHP, attackType: "magical" };
         if (game.user.isGM) await window._dbApplyDamage(data);
         else game.socket.emit("system.dawnbreaker-trials", data);
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #81c784;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🌿 <b>${c.name}</b> — <b>${actor.name}</b> ❤ HP: <span style="color:#e57373;">${curHP}</span> → <span style="color:${newHP<=0?"#e05555":"#81c784"};font-weight:700;">${newHP}</span> (−${dotAmt})</div>` });
@@ -5777,12 +5782,12 @@ const CTBEngine = {
         if (haunt.hp > 0) {
           const curHP = actor.system.hp?.current ?? 0;
           const newHP = Math.max(0, curHP - haunt.hp);
-          await window._dbApplyDamage({ type: "applyDamage", actorId: actor.id, newHP, attackType: "magical" });
+          await window._dbApplyDamage({ type: "applyDamage", actorId: actor.id, tokenId: callerTokenId ?? undefined, newHP, attackType: "magical" });
         }
         if (haunt.ar > 0) {
           const curAR = actor.system.ar?.current ?? 0;
           const newAR = Math.max(0, curAR - haunt.ar);
-          await window._dbApplyDamage({ type: "applyARDamage", actorId: actor.id, newAR, attackType: "magical" });
+          await window._dbApplyDamage({ type: "applyARDamage", actorId: actor.id, tokenId: callerTokenId ?? undefined, newAR, attackType: "magical" });
         }
         await actor.unsetFlag("dawnbreaker-trials", "hauntData");
       }
@@ -5794,7 +5799,7 @@ const CTBEngine = {
       const curHP  = actor.system.hp?.current ?? 0;
       const newHP  = Math.max(0, curHP - bleedStacks);
       await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🩸 <b>${actor.name}</b> is Bleeding — <span style="color:#e05555;font-weight:700;">${bleedStacks} stacks</span> deal ${bleedStacks} HP damage. Stacks: ${bleedStacks} → ${bleedStacks - 1}</div>` });
-      await window._dbApplyDamage({ type: "applyDamage", actorId: actor.id, newHP, attackType: "physical", noBleed: true });
+      await window._dbApplyDamage({ type: "applyDamage", actorId: actor.id, tokenId: callerTokenId ?? undefined, newHP, attackType: "physical", noBleed: true });
       await actor.setFlag("dawnbreaker-trials", "bleedStacks", bleedStacks - 1);
     }
 
@@ -6192,7 +6197,7 @@ window._playHitAnimation = async (targetToken, animationFile, animationScale = 1
 // ═══════════════════════════════════════════════════════════
 //  THROW SYSTEM
 // ═══════════════════════════════════════════════════════════
-window._resolveThrow = async ({ thrower, targetActor, item, distance, hasThrowAbility }) => {
+window._resolveThrow = async ({ thrower, targetActor, targetTokenId = null, item, distance, hasThrowAbility }) => {
   const str = thrower.system.stats?.STR?.total ?? 10, dex = thrower.system.stats?.DEX?.total ?? 10;
   const maxRange = 4 + Math.floor(str / 3);
   if (distance > maxRange) { ui.notifications.warn(`Out of throw range! Max: ${maxRange} tiles`); return; }
@@ -6222,8 +6227,8 @@ window._resolveThrow = async ({ thrower, targetActor, item, distance, hasThrowAb
       else if (stat === "ki") { const cur = targetActor.system.ki?.current ?? 0, max = targetActor.system.ki?.max ?? 0; updates["system.ki.current"] = Math.min(max, (updates["system.ki.current"] ?? cur) + val); resultLines.push(`✨ KI +${val}`); }
       else if (stat === "ar") { const cur = targetActor.system.ar?.current ?? 0, max = targetActor.system.ar?.max ?? 0; updates["system.ar.current"] = Math.min(max, (updates["system.ar.current"] ?? cur) + val); resultLines.push(`🛡 AR +${val}`); }
     } else if (action === "damage") {
-      if (stat === "hp") { const cur = targetActor.system.hp?.current ?? 0; const newHP = Math.max(0, cur - val); const dmgData = { type: "applyDamage", actorId: targetActor.id, newHP, attackType: "physical" }; if (game.user.isGM) await window._dbApplyDamage(dmgData); else game.socket.emit("system.dawnbreaker-trials", dmgData); resultLines.push(`❤ HP -${val}`); }
-      else if (stat === "ar") { const cur = targetActor.system.ar?.current ?? 0; const newAR = Math.max(0, cur - val); const dmgData = { type: "applyARDamage", actorId: targetActor.id, newAR, attackType: "physical" }; if (game.user.isGM) await window._dbApplyDamage(dmgData); else game.socket.emit("system.dawnbreaker-trials", dmgData); resultLines.push(`🛡 AR -${val}`); }
+      if (stat === "hp") { const cur = targetActor.system.hp?.current ?? 0; const newHP = Math.max(0, cur - val); const dmgData = { type: "applyDamage", actorId: targetActor.id, tokenId: targetTokenId ?? undefined, newHP, attackType: "physical" }; if (game.user.isGM) await window._dbApplyDamage(dmgData); else game.socket.emit("system.dawnbreaker-trials", dmgData); resultLines.push(`❤ HP -${val}`); }
+      else if (stat === "ar") { const cur = targetActor.system.ar?.current ?? 0; const newAR = Math.max(0, cur - val); const dmgData = { type: "applyARDamage", actorId: targetActor.id, tokenId: targetTokenId ?? undefined, newAR, attackType: "physical" }; if (game.user.isGM) await window._dbApplyDamage(dmgData); else game.socket.emit("system.dawnbreaker-trials", dmgData); resultLines.push(`🛡 AR -${val}`); }
     }
   }
   if (Object.keys(updates).length > 0) {
