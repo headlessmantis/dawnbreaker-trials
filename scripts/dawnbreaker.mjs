@@ -5094,6 +5094,19 @@ const CastQueue = {
       aoeRange: aoeRange ?? 0, aoeShape: aoeShape ?? "circle",
       animFile: animFile ?? "", animScale: animScale ?? 1.0, animSound: animSound ?? "",
     };
+
+    // ── Out of combat: cast-speed abilities resolve instantly ──────────────
+    // No CTB ticking outside combat means queued casts would never resolve.
+    // Healers and support casters can freely use their spells during downtime.
+    const ctbPhase  = window.CTB?.getState?.()?.phase ?? "idle";
+    const inCombat  = ctbPhase === "ticking" || ctbPhase === "active";
+    if (!inCombat) {
+      await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64d4ff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ ${abilityIcon ?? "⚡"} <b>${abilityName}</b> — cast instantly <span style="color:#7a8090;">(out of combat)</span></div>` });
+      await CastQueue.resolve(entry);
+      CTBDisplay.refresh();
+      return entry;
+    }
+
     queue.push(entry);
     await CastQueue.setQueue(queue);
     const casterToken = (casterTokenId ? canvas.tokens.placeables.find(t => t.document.id === casterTokenId) : null)
