@@ -5980,7 +5980,7 @@ class TargetSelector extends foundry.appv1.api.Application {
   }
   _getAffectedTokens(centerToken, allTokens) {
     if (this._range <= 0) return [centerToken];
-    const attackerToken = canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
+    const attackerToken = this._attackerToken ?? canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
     const aoeTiles = this._getAoETiles(centerToken, attackerToken);
     const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
     return allTokens.filter(t => aoeTiles.has(`${Math.round(t.document.x/size)},${Math.round(t.document.y/size)}`));
@@ -5989,7 +5989,7 @@ class TargetSelector extends foundry.appv1.api.Application {
     canvas.interface.grid.clearHighlightLayer("crucible.aoe");
     canvas.interface.grid.addHighlightLayer("crucible.aoe");
     if (this._range <= 0) return;
-    const attackerToken = canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
+    const attackerToken = this._attackerToken ?? canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
     const aoeTiles = this._getAoETiles(centerToken, attackerToken);
     const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
     for (const tile of aoeTiles) {
@@ -6003,7 +6003,7 @@ class TargetSelector extends foundry.appv1.api.Application {
     canvas.interface.grid.clearHighlightLayer("crucible.range");
     canvas.interface.grid.addHighlightLayer("crucible.range");
     if (this._reach >= 99) return;
-    const attackerToken = canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
+    const attackerToken = this._attackerToken ?? canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
     if (!attackerToken) return;
     const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
     const origX = Math.round(attackerToken.document.x/size), origY = Math.round(attackerToken.document.y/size);
@@ -6094,7 +6094,7 @@ class TargetSelector extends foundry.appv1.api.Application {
       const tokenId = ev.currentTarget.dataset.tokenId;
       const token   = canvas.tokens.placeables.find(t => t.document?.id === tokenId || t.id === tokenId);
       if (!token) return;
-      const attackerToken = canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
+      const attackerToken = this._attackerToken ?? canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
       if (attackerToken) {
         const selDist = this._tileDistance(attackerToken, token);
         if (selDist > this._reach) { ui.notifications.warn(`Out of range!`); return; }
