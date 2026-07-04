@@ -1766,9 +1766,9 @@ class DawnbreakerShopApp extends foundry.appv1.api.Application {
     this.setPosition({ left: 0, top: 0, width: window.innerWidth, height: window.innerHeight });
     const el = this.element?.[0];
     if (el) {
-      el.style.zIndex = "9999";
       el.style.borderRadius = "0";
     }
+    _bumpZIndexAboveOthers(this);
   }
 
   _catAbbrev(cat) { return (cat ?? "GN").slice(0, 2).toUpperCase(); }
@@ -6019,10 +6019,17 @@ class TargetSelector extends foundry.appv1.api.Application {
   async _render(force, options) {
     await super._render(force, options);
     if (force) {
-      const ctb = CTBDisplay.getInstance();
-      if (ctb?.rendered) {
-        const { left, top, width } = ctb.position;
-        this.setPosition({ left: left + width + 4, top });
+      // Anchor beneath the action menu HUD; fall back to beside the CTB panel
+      const hud = document.querySelector("#ib-hud-layer");
+      if (hud) {
+        const rect = hud.getBoundingClientRect();
+        this.setPosition({ left: rect.left, top: rect.bottom + 8 });
+      } else {
+        const ctb = CTBDisplay.getInstance();
+        if (ctb?.rendered) {
+          const { left, top, width } = ctb.position;
+          this.setPosition({ left: left + width + 4, top });
+        }
       }
     }
   }

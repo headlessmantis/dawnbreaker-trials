@@ -1763,7 +1763,7 @@
 }
 
 /* ── Shop App — Terminal aesthetic ────────────────────────── */
-.db-shop-app { z-index: 9000 !important; }
+/* z-index handled dynamically — every window renders one above the last */
 .db-shop-app .window-header { background: #080b10; border-bottom: 1px solid #1a2030; padding: 0 10px; }
 .db-shop-app .window-header h3 { color: var(--db-accent); font-size: 21px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; font-family: 'Bebas Neue', 'Courier New', monospace; }
 .db-shop-app .window-header .close { color: var(--db-dim); }
