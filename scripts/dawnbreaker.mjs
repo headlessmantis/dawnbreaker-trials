@@ -2582,7 +2582,7 @@ Hooks.once("ready", () => {
       const newHP     = Math.max(0, currentHP - data.reducedDamage);
       await actor.update({ "system.hp.current": newHP });
       if (newHP <= 0) {
-        await CastQueue.cancelForActor(actor.id, "was downed");
+        await CastQueue.cancelForActor(actor.id, "was downed", actor.isToken ? actor.token?.id : (data?.tokenId ?? null));
         await _applyDownCondition(actor);
       }
       if (data.attackType) await _checkReactiveItems(actor, data.attackType);
@@ -3733,7 +3733,7 @@ Hooks.on("updateActor", async (actor, changes) => {
     if (!oldConditions.some(o => o.name === newC.name && o.label === newC.label)) {
       await _applyStatusEffect(actor, newC.label, true);
       if (CAST_CANCEL_CONDITIONS.includes(newC.label?.toLowerCase()) && game.user.isGM) {
-        await CastQueue.cancelForActor(actor.id, `gained ${newC.name}`);
+        await CastQueue.cancelForActor(actor.id, `gained ${newC.name}`, actor.isToken ? actor.token?.id : null);
       }
     }
   }
@@ -4201,7 +4201,7 @@ const DB_REACTIONS = {
             ${newHP<=0?" ☠ Down!":""}
           </div>` });
           if (newHP <= 0) {
-            await CastQueue.cancelForActor(dtActor.id, "was downed");
+            await CastQueue.cancelForActor(dtActor.id, "was downed", dtActor.isToken ? dtActor.token?.id : null);
             await _applyDownCondition(dtActor);
           }
         }
@@ -4702,7 +4702,7 @@ window._dbApplyDamage = async (data) => {
     const newHP = Math.max(0, currentHP - moonDmg);
     await actor.update({ "system.hp.current": newHP });
     if (newHP <= 0) {
-      await CastQueue.cancelForActor(actor.id, "was downed");
+      await CastQueue.cancelForActor(actor.id, "was downed", actor.isToken ? actor.token?.id : (data?.tokenId ?? null));
       await _applyDownCondition(actor, { suppressChat: true });
     }
 
@@ -5011,18 +5011,33 @@ window._lightAuraUpdateAllyConditions = _lightAuraUpdateAllyConditions;
 
 const CastQueue = {
   SETTING: "castQueueState",
+  // onResolve callbacks can't serialize into the world-setting queue — they
+  // live here on the client that queued the cast, keyed by callbackId. When
+  // the GM resolves the entry, a socket ping tells the owning client to run it.
+  _localCallbacks: new Map(),
   getQueue() { try { return game.settings.get("dawnbreaker-trials", CastQueue.SETTING) ?? []; } catch(e) { return []; } },
   async setQueue(queue) {
     await game.settings.set("dawnbreaker-trials", CastQueue.SETTING, queue);
     game.socket.emit("system.dawnbreaker-trials", { type: "castQueueUpdate", queue });
   },
-  async queue({ actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound }) {
+  async queue({ actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId = null, targetTokenId = null, onResolve = null, callbackId = null }) {
+    // Self-derive the caster's token when not passed — the caster is the
+    // controlled token in every casting macro. Required so duplicate unlinked
+    // casters resolve/cancel/fizzle independently.
+    casterTokenId ??= (canvas.tokens.controlled[0]?.actor?.id === actorId ? canvas.tokens.controlled[0].document.id : null);
+    // Register onResolve on THIS client before any relay — the GM's resolve
+    // pings back via socket and whichever client holds the callback runs it.
+    if (onResolve && !callbackId) {
+      callbackId = foundry.utils.randomID();
+      CastQueue._localCallbacks.set(callbackId, onResolve);
+    }
     if (!game.user.isGM) {
-      game.socket.emit("system.dawnbreaker-trials", { type: "castQueueAdd", actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound });
+      game.socket.emit("system.dawnbreaker-trials", { type: "castQueueAdd", actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId, targetTokenId, callbackId });
       return;
     }
     const queue = CastQueue.getQueue();
-    const casterForWIL = game.actors.get(actorId);
+    const casterForWIL = (casterTokenId ? canvas.tokens.placeables.find(t => t.document.id === casterTokenId)?.actor : null)
+      ?? game.actors.get(actorId);
 
     // ── Cursed Reflection check — must pass WIL DC 10 before queuing ──
     const hasCR = (casterForWIL?.system.conditions ?? []).some(c =>
@@ -5052,6 +5067,8 @@ const CastQueue = {
     const effectiveCastSpeed = castSpeed + wilVal;
     const entry = {
       id: foundry.utils.randomID(), actorId, targetId, abilityName,
+      casterTokenId: casterTokenId ?? null, targetTokenId: targetTokenId ?? null,
+      callbackId: callbackId ?? null,
       abilityIcon: abilityIcon ?? "⚡", castSpeed: effectiveCastSpeed, apCurrent: 0, apTotal: effectiveCastSpeed,
       attackType: attackType ?? "physical", formula: formula ?? "",
       apCost: apCost ?? 0, kiCost: kiCost ?? 0,
@@ -5061,10 +5078,11 @@ const CastQueue = {
     };
     queue.push(entry);
     await CastQueue.setQueue(queue);
-    const casterToken = canvas.tokens.placeables.find(t => t.actor?.id === actorId);
+    const casterToken = (casterTokenId ? canvas.tokens.placeables.find(t => t.document.id === casterTokenId) : null)
+      ?? canvas.tokens.placeables.find(t => t.actor?.id === actorId);
     if (casterToken) await casterToken.document.update({ "texture.ring.colors.ring": "#00aaff" });
-    const caster = game.actors.get(actorId);
-    const target = game.actors.get(targetId);
+    const target = (targetTokenId ? canvas.tokens.placeables.find(t => t.document.id === targetTokenId)?.actor : null)
+      ?? game.actors.get(targetId);
     await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #00aaff;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#64d4ff;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #3a3f4a;padding-bottom:5px;margin-bottom:8px;">⚡ ${abilityIcon} ${abilityName} — Casting</div><table style="width:100%;font-size:12px;border-collapse:collapse;"><tr><td style="color:#7a8090;padding:2px 4px;">Caster</td><td style="text-align:right;">${casterForWIL?.name ?? "Unknown"}</td></tr><tr><td style="color:#7a8090;padding:2px 4px;">Target</td><td style="text-align:right;">${target?.name ?? "Unknown"}</td></tr><tr><td style="color:#7a8090;padding:2px 4px;">Base Cast Speed</td><td style="text-align:right;color:#64d4ff;">${castSpeed} AP / tick</td></tr><tr><td style="color:#a080ff;padding:2px 4px;">WIL Bonus</td><td style="text-align:right;color:#a080ff;">+${wilVal}</td></tr><tr style="border-top:1px solid #3a3f4a;"><td style="color:#d4d8e0;padding:3px 4px;font-weight:700;">Cast Speed</td><td style="text-align:right;color:#64d4ff;font-weight:700;">${effectiveCastSpeed} AP / tick</td></tr></table></div>` });
     CTBDisplay.refresh();
     return entry;
@@ -5083,9 +5101,13 @@ const CastQueue = {
   },
   async resolve(entry) {
     if (!game.user.isGM) return;
-    const caster = game.actors.get(entry.actorId);
-    const target = game.actors.get(entry.targetId);
-    const casterToken = canvas.tokens.placeables.find(t => t.actor?.id === entry.actorId);
+    // Token-first resolution — duplicate unlinked casters/targets share actor
+    // ids, so the stored token ids are the only reliable identity.
+    const casterToken = (entry.casterTokenId ? canvas.tokens.placeables.find(t => t.document.id === entry.casterTokenId) : null)
+      ?? canvas.tokens.placeables.find(t => t.actor?.id === entry.actorId);
+    const targetToken = entry.targetTokenId ? canvas.tokens.placeables.find(t => t.document.id === entry.targetTokenId) : null;
+    const caster = casterToken?.actor ?? game.actors.get(entry.actorId);
+    const target = targetToken?.actor ?? game.actors.get(entry.targetId);
     if (casterToken) await casterToken.document.update({ "texture.ring.colors.ring": "#000000" });
     if (!caster || (caster.system.hp?.current ?? 0) <= 0) {
       await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> fizzled — caster was downed.</div>` });
@@ -5107,7 +5129,7 @@ const CastQueue = {
       resolvedTargets = canvas.tokens.placeables.filter(t => {
         const tx = Math.round(t.document.x/size), ty = Math.round(t.document.y/size);
         return aoeTiles.has(`${tx},${ty}`) && t.actor;
-      }).map(t => t.actor);
+      }).map(t => ({ actor: t.actor, token: t }));
       if (!resolvedTargets.length) {
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> resolved but no targets remain in area.</div>` });
         return;
@@ -5117,12 +5139,12 @@ const CastQueue = {
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> fizzled — target no longer valid.</div>` });
         return;
       }
-      resolvedTargets = [target];
+      resolvedTargets = [{ actor: target, token: targetToken ?? canvas.tokens.placeables.find(t => t.actor?.id === target.id) ?? null }];
     }
-    const targetNames = resolvedTargets.map(a => a.name).join(", ");
+    const targetNames = resolvedTargets.map(rt => rt.actor.name).join(", ");
     await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64d4ff;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#64d4ff;border-bottom:1px solid #3a3f4a;padding-bottom:5px;margin-bottom:8px;">⚡ ${entry.abilityIcon} ${entry.abilityName} — Resolves!</div><div style="font-size:12px;color:#7a8090;">${caster?.name} → ${targetNames}</div></div>` });
     if (entry.formula && caster) {
-      for (const targetActor of resolvedTargets) {
+      for (const { actor: targetActor, token: tTok } of resolvedTargets) {
         try {
           const dmgRoll = await new Roll(entry.formula, caster.getRollData()).evaluate();
           const amount  = Math.max(0, dmgRoll.total);
@@ -5135,7 +5157,7 @@ const CastQueue = {
           } else {
             const cur = targetActor.system.hp?.current ?? 0;
             const newHP = Math.max(0, cur - amount);
-            const dmgData = { type: "applyDamage", actorId: targetActor.id, newHP, attackType: entry.attackType };
+            const dmgData = { type: "applyDamage", actorId: targetActor.id, tokenId: tTok?.document?.id ?? tTok?.id, sourceActorId: entry.actorId, sourceTokenId: entry.casterTokenId ?? undefined, newHP, attackType: entry.attackType };
             await window._dbApplyDamage(dmgData);
             await dmgRoll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: caster }), flavor: `${entry.abilityName} — Damage → ${targetActor.name}` });
           }
@@ -5143,10 +5165,8 @@ const CastQueue = {
       }
     }
     if (entry.animFile && window._playHitAnimation) {
-      const casterToken2 = canvas.tokens.placeables.find(t => t.actor?.id === entry.actorId);
-      for (const targetActor of resolvedTargets) {
-        const token = canvas.tokens.placeables.find(t => t.actor?.id === targetActor.id);
-        if (token) await window._playHitAnimation(token, entry.animFile, entry.animScale ?? 1.0, entry.animSound ?? "", casterToken2);
+      for (const { token: tTok } of resolvedTargets) {
+        if (tTok) await window._playHitAnimation(tTok, entry.animFile, entry.animScale ?? 1.0, entry.animSound ?? "", casterToken);
       }
     }
 
@@ -5157,8 +5177,7 @@ const CastQueue = {
           const spr    = caster.system.stats?.SPR?.total ?? 0;
           const sprMod = Math.floor(spr / 3) - 3;
           const bonus  = Math.max(0, 5 + sprMod);
-          // Find the specific caster token
-          const casterToken = canvas.tokens.placeables.find(t => t.actor?.id === caster.id);
+          // casterToken already token-first resolved above
           const tokenId = casterToken?.document?.id ?? null;
           const origLight = {
             bright: casterToken?.document.light?.bright ?? 0,
@@ -5196,18 +5215,37 @@ const CastQueue = {
         } catch(e) {}
       }
     }
+
+    // ── onResolve callback dispatch ────────────────────────────────────────
+    // The callback lives on whichever client queued the cast. Run it here if
+    // this client holds it; otherwise ping all clients — the owner runs it.
+    if (entry.callbackId) {
+      const cb = CastQueue._localCallbacks.get(entry.callbackId);
+      if (cb) {
+        CastQueue._localCallbacks.delete(entry.callbackId);
+        try { await cb(caster); } catch(e) { console.warn("CastQueue | onResolve failed:", e); }
+      } else {
+        game.socket.emit("system.dawnbreaker-trials", { type: "castResolvedCallback", callbackId: entry.callbackId, actorId: entry.actorId, casterTokenId: entry.casterTokenId ?? null });
+      }
+    }
   },
-  async cancelForActor(actorId, reason) {
+  async cancelForActor(actorId, reason, tokenId = null) {
+    // When tokenId is given, cancel only THAT token's casts — duplicate
+    // unlinked casters share actorId, and downing one twin must not cancel
+    // the other's cast. Entries without a stored casterTokenId still cancel
+    // by actorId (legacy entries).
     const queue = CastQueue.getQueue();
-    const cancelled = queue.filter(e => e.actorId === actorId);
-    const remaining = queue.filter(e => e.actorId !== actorId);
+    const matches = (e) => e.actorId === actorId && (!tokenId || !e.casterTokenId || e.casterTokenId === tokenId);
+    const cancelled = queue.filter(matches);
+    const remaining = queue.filter(e => !matches(e));
     if (!cancelled.length) return;
     await CastQueue.setQueue(remaining);
-    const token = canvas.tokens.placeables.find(t => t.actor?.id === actorId);
-    if (token) await token.document.update({ "texture.ring.colors.ring": "#000000" });
-    const actor = game.actors.get(actorId);
     for (const entry of cancelled) {
-      await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> cancelled — ${actor?.name ?? "Caster"} ${reason ?? "was interrupted"}.</div>` });
+      const ringToken = (entry.casterTokenId ? canvas.tokens.placeables.find(t => t.document.id === entry.casterTokenId) : null)
+        ?? canvas.tokens.placeables.find(t => t.actor?.id === actorId);
+      if (ringToken) await ringToken.document.update({ "texture.ring.colors.ring": "#000000" });
+      const casterName = ringToken?.actor?.name ?? game.actors.get(actorId)?.name ?? "Caster";
+      await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> cancelled — ${casterName} ${reason ?? "was interrupted"}.</div>` });
     }
     CTBDisplay.refresh();
   },
@@ -7344,6 +7382,18 @@ Hooks.once("ready", () => {
       return;
     }
 
+    // ── Cast onResolve callback — runs on whichever client queued the cast ──
+    if (data.type === "castResolvedCallback") {
+      const cb = CastQueue._localCallbacks.get(data.callbackId);
+      if (cb) {
+        CastQueue._localCallbacks.delete(data.callbackId);
+        const cbCasterToken = data.casterTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.casterTokenId) : null;
+        const cbCaster = cbCasterToken?.actor ?? game.actors.get(data.actorId);
+        try { await cb(cbCaster); } catch(e) { console.warn("CastQueue | onResolve failed:", e); }
+      }
+      return;
+    }
+
     // ── Cutscene viewer — broadcast to ALL clients ──
     if (data.type === "cutsceneShow") {
       CutsceneViewer.show({ img: data.img, caption: data.caption, sound: data.sound });
@@ -7478,7 +7528,7 @@ Hooks.once("ready", () => {
       const currentHP = actor.system.hp?.current ?? 0;
       const newHP     = Math.max(0, currentHP - data.reducedDamage);
       await actor.update({ "system.hp.current": newHP });
-      if (newHP <= 0) { await CastQueue.cancelForActor(actor.id, "was downed"); await _applyDownCondition(actor); }
+      if (newHP <= 0) { await CastQueue.cancelForActor(actor.id, "was downed", actor.isToken ? actor.token?.id : (data?.tokenId ?? null)); await _applyDownCondition(actor); }
       if (data.attackType) await _checkReactiveItems(actor, data.attackType);
       return;
     }
@@ -7566,7 +7616,7 @@ Hooks.once("ready", () => {
       const curHP = sgActor.system.hp?.current ?? 0;
       const newHP = Math.max(0, curHP - data.reducedDamage);
       await sgActor.update({ "system.hp.current": newHP });
-      if (newHP <= 0) { await CastQueue.cancelForActor(sgActor.id, "was downed"); await _applyDownCondition(sgActor); }
+      if (newHP <= 0) { await CastQueue.cancelForActor(sgActor.id, "was downed", sgActor.isToken ? sgActor.token?.id : null); await _applyDownCondition(sgActor); }
       return;
     }
 
