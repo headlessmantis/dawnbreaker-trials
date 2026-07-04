@@ -2,13 +2,13 @@
   "id": "dawnbreaker-trials",
   "title": "Dawnbreaker Trials",
   "description": "Custom character sheet system for Dawnbreaker Trials.",
-  "version": "1.1.10",
+  "version": "1.1.11",
   "compatibility": {
     "minimum": "13",
     "verified": "14"
   },
   "authors": [{"name": "Custom Build"}],
-  "esmodules": ["scripts/dawnbreaker.mjs"],
+  "esmodules": ["scripts/dawnbreaker.mjs", "scripts/dawnbreaker-hud.mjs"],
   "styles": ["styles/dawnbreaker.css"],
   "languages": [],
   "packs": [],
@@ -19,7 +19,8 @@
   "documentTypes": {
     "Actor": {
       "character": {},
-      "npc": {}
+      "npc": {},
+      "companion": {}
     },
     "Item": {
       "weapon":     {},

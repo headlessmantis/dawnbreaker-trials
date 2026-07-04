@@ -1,4 +1,4 @@
-{{!-- Dawnbreaker Trials NPC Sheet --}}
+﻿{{!-- Dawnbreaker Trials NPC Sheet --}}
 <form class="dawnbreaker dawnbreaker-npc sheet" autocomplete="off">
 
   {{!-- HEADER --}}
@@ -25,7 +25,7 @@
     <a class="item" data-tab="npc-notes">Notes</a>
   </nav>
 
-  {{!-- ═══════════════ TAB: CORE ═══════════════ --}}
+  {{!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• TAB: CORE â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• --}}
   <div class="sheet-body tab active" data-tab="npc-core" data-group="primary">
 
     {{!-- RESOURCES --}}
@@ -67,70 +67,137 @@
 
       <div class="npc-stat-block">
         <div class="npc-stat-name">STR</div>
-        <input type="number" name="system.stats.STR" value="{{system.stats.STR}}" placeholder="—"/>
+        <input type="number" name="system.stats.STR" value="{{system.stats.STR}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">CON</div>
-        <input type="number" name="system.stats.CON" value="{{system.stats.CON}}" placeholder="—"/>
+        <input type="number" name="system.stats.CON" value="{{system.stats.CON}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">AGI</div>
-        <input type="number" name="system.stats.AGI" value="{{system.stats.AGI}}" placeholder="—"/>
+        <input type="number" name="system.stats.AGI" value="{{system.stats.AGI}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">DEX</div>
-        <input type="number" name="system.stats.DEX" value="{{system.stats.DEX}}" placeholder="—"/>
+        <input type="number" name="system.stats.DEX" value="{{system.stats.DEX}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">INT</div>
-        <input type="number" name="system.stats.INT" value="{{system.stats.INT}}" placeholder="—"/>
+        <input type="number" name="system.stats.INT" value="{{system.stats.INT}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">SPR</div>
-        <input type="number" name="system.stats.SPR" value="{{system.stats.SPR}}" placeholder="—"/>
+        <input type="number" name="system.stats.SPR" value="{{system.stats.SPR}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">FOR</div>
-        <input type="number" name="system.stats.FOR" value="{{system.stats.FOR}}" placeholder="—"/>
+        <input type="number" name="system.stats.FOR" value="{{system.stats.FOR}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">WIL</div>
-        <input type="number" name="system.stats.WIL" value="{{system.stats.WIL}}" placeholder="—"/>
+        <input type="number" name="system.stats.WIL" value="{{system.stats.WIL}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">CHA</div>
-        <input type="number" name="system.stats.CHA" value="{{system.stats.CHA}}" placeholder="—"/>
+        <input type="number" name="system.stats.CHA" value="{{system.stats.CHA}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">MV</div>
-        <input type="number" name="system.stats.MV" value="{{system.stats.MV}}" placeholder="—"/>
+        <input type="number" name="system.stats.MV" value="{{system.stats.MV}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">AP</div>
-        <input type="number" name="system.stats.AP" value="{{system.stats.AP}}" placeholder="—"/>
+        <input type="number" name="system.stats.AP" value="{{system.stats.AP}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">ASS</div>
-        <input type="number" name="system.stats.ASS" value="{{system.stats.ASS}}" placeholder="—"/>
+        <input type="number" name="system.stats.ASS" value="{{system.stats.ASS}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">PR</div>
-        <input type="number" name="system.stats.PR" value="{{system.stats.PR}}" placeholder="—"/>
+        <input type="number" name="system.stats.PR" value="{{system.stats.PR}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">BRK</div>
-        <input type="number" name="system.stats.BRK" value="{{system.stats.BRK}}" placeholder="—"/>
+        <input type="number" name="system.stats.BRK" value="{{system.stats.BRK}}" placeholder="â€”"/>
       </div>
       <div class="npc-stat-block">
         <div class="npc-stat-name">MR</div>
-        <input type="number" name="system.stats.MR" value="{{system.stats.MR}}" placeholder="—"/>
+        <input type="number" name="system.stats.MR" value="{{system.stats.MR}}" placeholder="â€”"/>
       </div>
 
     </div>
 
+    {{!-- NPC FLAGS --}}
+    <div class="section-title" style="margin-top:10px;">Behaviour Flags</div>
+    <div class="npc-flags-row">
+      <label class="npc-flag-label" style="margin-top:6px;border-top:1px solid var(--db-border);padding-top:6px;color:var(--db-accent);letter-spacing:1px;font-size:11px;">NPC SERVICES</label>
+      <div style="display:flex;gap:16px;margin-top:2px;">
+        <label class="npc-flag-label"><input type="checkbox" name="system.shopEnabled" {{#if system.shopEnabled}}checked{{/if}}/> Shop</label>
+        <label class="npc-flag-label"><input type="checkbox" name="system.blacksmithEnabled" {{#if system.blacksmithEnabled}}checked{{/if}}/> Blacksmith</label>
+        <label class="npc-flag-label"><input type="checkbox" name="system.enhancerEnabled" {{#if system.enhancerEnabled}}checked{{/if}}/> Enhancer</label>
+      </div>
+      <label class="npc-flag-label">
+        <input type="checkbox" class="npc-noncombatant-toggle" {{#if nonCombatant}}checked{{/if}}/>
+        Non-Combatant <span class="npc-flag-hint">(skip CTB on combat start)</span>
+      </label>
+    </div>
+
+    {{!-- SHOP CONFIGURATION (GM only, shown when interactable) --}}
+    {{#if isInteractable}}
+    {{#if isGM}}
+    <div class="section-title" style="margin-top:10px;">
+      Shop Configuration
+      <button type="button" class="open-shop-tables-btn" style="margin-left:6px;">âš™ Manage Tables</button>
+      <button type="button" class="shop-open-preview-btn" style="margin-left:4px;">ðŸ‘ Preview</button>
+    </div>
+
+    <div class="npc-shop-config-row">
+      <label class="npc-flag-label" style="flex:0 0 auto;">Shop Table</label>
+      <select class="shop-table-select">
+        <option value="">â€” Custom (per-NPC) â€”</option>
+        {{#each shopTables}}
+        <option value="{{id}}" {{#if selected}}selected{{/if}}>{{name}}</option>
+        {{/each}}
+      </select>
+    </div>
+
+    {{!-- Per-NPC custom inventory (only shown when no table is selected) --}}
+    {{#unless shopTableId}}
+    <div class="section-title" style="margin-top:8px;font-size:11px;color:var(--db-dim);">
+      Custom Inventory
+      <button type="button" class="add-row shop-add-item-btn" style="font-size:10px;">+ Add Item</button>
+    </div>
+    <div class="npc-flag-label" style="margin-bottom:4px;">
+      <label style="color:var(--db-dim);font-size:11px;">Shop Name</label>
+      <input type="text" class="shop-name-input" value="{{shopInventory.name}}" placeholder="e.g. Merchant's Wares" style="background:var(--db-bg2);border:1px solid var(--db-border);color:var(--db-text);border-radius:3px;padding:3px 6px;width:200px;margin-left:6px;"/>
+    </div>
+    {{#if shopInventory.items.length}}
+    <table class="ability-table" style="font-size:11px;">
+      <thead><tr><th>Name</th><th>Price</th><th>Stock (âˆ’1=âˆž)</th><th>Description</th><th></th></tr></thead>
+      <tbody>
+        {{#each shopInventory.items}}
+        <tr data-shop-item-id="{{id}}">
+          <td><input type="text" class="shop-item-field" data-field="name" value="{{name}}" style="width:100%;background:var(--db-bg2);border:1px solid var(--db-border);color:var(--db-text);border-radius:2px;padding:2px 4px;"/></td>
+          <td><input type="number" class="shop-item-field" data-field="price" value="{{price}}" min="0" style="width:60px;background:var(--db-bg2);border:1px solid var(--db-border);color:var(--db-text);border-radius:2px;padding:2px 4px;"/></td>
+          <td><input type="number" class="shop-item-field" data-field="qty" value="{{qty}}" min="-1" style="width:60px;background:var(--db-bg2);border:1px solid var(--db-border);color:var(--db-text);border-radius:2px;padding:2px 4px;"/></td>
+          <td><input type="text" class="shop-item-field" data-field="description" value="{{description}}" style="width:100%;background:var(--db-bg2);border:1px solid var(--db-border);color:var(--db-text);border-radius:2px;padding:2px 4px;"/></td>
+          <td><button type="button" class="shop-del-item-btn del-row" data-id="{{id}}">âœ•</button></td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="no-items-msg">No items yet. Drag items here or click + Add Item.</div>
+    {{/if}}
+    {{/unless}}
+
+    {{/if}}
+    {{/if}}
+
   </div>
 
-  {{!-- ═══════════════ TAB: ATTACKS ═══════════════ --}}
+  {{!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• TAB: ATTACKS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• --}}
   <div class="sheet-body tab" data-tab="npc-attacks" data-group="primary">
 
     <div class="section-title">Attacks & Abilities
@@ -147,7 +214,7 @@
           <td><input type="text" name="system.attacks.{{@index}}.cost" value="{{this.cost}}"/></td>
           <td><input type="text" name="system.attacks.{{@index}}.speed" value="{{this.speed}}"/></td>
           <td><input type="text" name="system.attacks.{{@index}}.effect" value="{{this.effect}}"/></td>
-          <td><button type="button" class="del-row" data-type="npcAttacks" data-index="{{@index}}">✕</button></td>
+          <td><button type="button" class="del-row" data-type="npcAttacks" data-index="{{@index}}">âœ•</button></td>
         </tr>
         {{/each}}
       </tbody>
@@ -155,8 +222,20 @@
 
   </div>
 
-  {{!-- ═══════════════ TAB: NOTES ═══════════════ --}}
+  {{!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• TAB: NOTES â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• --}}
   <div class="sheet-body tab" data-tab="npc-notes" data-group="primary">
+
+    <div class="section-title">Greeting Sound</div>
+    <p style="font-size:11px;color:#7a8090;margin:2px 0 4px;">Plays for all players when this NPC's shop is opened.</p>
+    <input type="text" name="system.greetingSound" value="{{system.greetingSound}}" placeholder="sounds/…" style="margin-bottom:8px;width:100%;box-sizing:border-box;"/>
+
+    <div class="section-title">Forge Sound</div>
+    <p style="font-size:11px;color:#7a8090;margin:2px 0 4px;">Plays for all players when an item is forge upgraded at this shop.</p>
+    <input type="text" name="system.forgeSound" value="{{system.forgeSound}}" placeholder="sounds/…" style="margin-bottom:8px;width:100%;box-sizing:border-box;"/>
+
+    <div class="section-title">Enhance Sound</div>
+    <p style="font-size:11px;color:#7a8090;margin:2px 0 4px;">Plays for all players when an enhancement slot is rolled or rerolled at this shop.</p>
+    <input type="text" name="system.enhanceSound" value="{{system.enhanceSound}}" placeholder="sounds/…" style="margin-bottom:12px;width:100%;box-sizing:border-box;"/>
 
     <div class="section-title">Attack Animation (Sequencer)</div>
     <p style="font-size:11px;color:#7a8090;margin:2px 0 4px;">Plays on standard attacks. e.g. <code>jb2a.impact.002.orange</code></p>
@@ -176,10 +255,10 @@
         {{#each system.animationSlots}}
         <tr>
           <td><input type="text" name="system.animationSlots.{{@index}}.name"  value="{{this.name}}"  placeholder="e.g. burrow"/></td>
-          <td><input type="text" name="system.animationSlots.{{@index}}.file"  value="{{this.file}}"  placeholder="jb2a.…"/></td>
+          <td><input type="text" name="system.animationSlots.{{@index}}.file"  value="{{this.file}}"  placeholder="jb2a.â€¦"/></td>
           <td><input type="number" name="system.animationSlots.{{@index}}.scale" value="{{this.scale}}" placeholder="1.0" step="0.1" min="0.1" max="5"/></td>
-          <td><input type="text" name="system.animationSlots.{{@index}}.sound" value="{{this.sound}}" placeholder="sounds/…"/></td>
-          <td><button type="button" class="del-row" data-type="npcAnimSlots" data-index="{{@index}}">✕</button></td>
+          <td><input type="text" name="system.animationSlots.{{@index}}.sound" value="{{this.sound}}" placeholder="sounds/â€¦"/></td>
+          <td><button type="button" class="del-row" data-type="npcAnimSlots" data-index="{{@index}}">âœ•</button></td>
         </tr>
         {{/each}}
       </tbody>
@@ -201,7 +280,7 @@
           <td style="width:40px"><input type="number" name="system.conditions.{{@index}}.instance" value="{{this.instance}}" min="0" title="Hits before consumed"/></td>
           <td><input type="text" name="system.conditions.{{@index}}.effect" value="{{this.effect}}" placeholder="-20% or -100%"/></td>
           <td style="width:80px"><input type="text" name="system.conditions.{{@index}}.label" value="{{this.label}}" placeholder="e.g. shield"/></td>
-          <td><button type="button" class="del-row" data-type="npcConditions" data-index="{{@index}}">✕</button></td>
+          <td><button type="button" class="del-row" data-type="npcConditions" data-index="{{@index}}">âœ•</button></td>
         </tr>
         {{/each}}
       </tbody>

@@ -5,9 +5,20 @@
   <header class="item-header">
     <img class="item-img" src="{{item.img}}" data-edit="img" title="{{item.name}}"/>
     <div class="item-header-fields">
-      <h1 class="item-name">
-        <input name="name" type="text" value="{{item.name}}" placeholder="Item Name"/>
-      </h1>
+      <div class="item-name-row" style="--item-rarity-color:{{rarityColor}};">
+        <select name="system.rarity" class="item-rarity-inline">
+          <option value="basic"     {{#if (eq system.rarity "basic")}}selected{{/if}}>Basic</option>
+          <option value="rare"      {{#if (eq system.rarity "rare")}}selected{{/if}}>Rare</option>
+          <option value="arcane"    {{#if (eq system.rarity "arcane")}}selected{{/if}}>Arcane</option>
+          <option value="unique"    {{#if (eq system.rarity "unique")}}selected{{/if}}>Unique</option>
+          <option value="legendary" {{#if (eq system.rarity "legendary")}}selected{{/if}}>Legendary</option>
+          <option value="ethereal"  {{#if (eq system.rarity "ethereal")}}selected{{/if}}>Ethereal</option>
+        </select>
+        <h1 class="item-name">
+          <input name="name" type="text" value="{{item.name}}" placeholder="Item Name"/>
+          {{#if system.upgradeLevel}}<span class="item-level-badge">+{{system.upgradeLevel}}</span>{{/if}}
+        </h1>
+      </div>
       <div class="item-header-row">
         <div class="form-group">
           <label>Item Type</label>
@@ -24,14 +35,15 @@
         <div class="form-group">
           <label>Slot</label>
           <select name="system.slot">
-            <option value=""        {{#if (eq system.slot "")}}selected{{/if}}>— None —</option>
-            <option value="weapon"  {{#if (eq system.slot "weapon")}}selected{{/if}}>Weapon</option>
-            <option value="offhand" {{#if (eq system.slot "offhand")}}selected{{/if}}>Off-Hand</option>
-            <option value="chest"   {{#if (eq system.slot "chest")}}selected{{/if}}>Chest</option>
-            <option value="head"    {{#if (eq system.slot "head")}}selected{{/if}}>Head</option>
-            <option value="legs"    {{#if (eq system.slot "legs")}}selected{{/if}}>Legs</option>
-            <option value="item"      {{#if (eq system.slot "item")}}selected{{/if}}>Item</option>
+            <option value=""          {{#if (eq system.slot "")}}selected{{/if}}>— None —</option>
+            <option value="weapon"    {{#if (eq system.slot "weapon")}}selected{{/if}}>Weapon</option>
+            <option value="offhand"   {{#if (eq system.slot "offhand")}}selected{{/if}}>Off-Hand</option>
+            <option value="chest"     {{#if (eq system.slot "chest")}}selected{{/if}}>Chest</option>
+            <option value="head"      {{#if (eq system.slot "head")}}selected{{/if}}>Head</option>
+            <option value="legs"      {{#if (eq system.slot "legs")}}selected{{/if}}>Legs</option>
+            <option value="feet"      {{#if (eq system.slot "feet")}}selected{{/if}}>Feet</option>
             <option value="accessory" {{#if (eq system.slot "accessory")}}selected{{/if}}>Accessory</option>
+            <option value="item"      {{#if (eq system.slot "item")}}selected{{/if}}>Item</option>
           </select>
         </div>
         <div class="form-group">
@@ -42,10 +54,6 @@
             <option value="science"  {{#if (eq system.attribute "science")}}selected{{/if}}>Science</option>
           </select>
         </div>
-        <div class="form-group">
-          <label>Cost (Credits)</label>
-          <input type="number" name="system.cost" value="{{system.cost}}" min="0"/>
-        </div>
       </div>
     </div>
   </header>
@@ -53,18 +61,35 @@
   {{!-- TABS --}}
   <nav class="sheet-tabs tabs" data-group="primary">
     <a class="item active" data-tab="item-details">Details</a>
-    <a class="item" data-tab="item-stats">Bonuses</a>
-    <a class="item" data-tab="item-recipe">Recipe</a>
+    <a class="item" data-tab="item-stats">Enhance</a>
+    <a class="item" data-tab="item-forge">Forge</a>
     <a class="item" data-tab="item-macro">Macro</a>
   </nav>
 
   {{!-- ═══ TAB: DETAILS ═══ --}}
   <div class="sheet-body tab active" data-tab="item-details" data-group="primary">
 
+    {{!-- MANAGEMENT --}}
+    <div class="section-title">Management</div>
+    <div class="item-mgmt-grid">
+      <div class="form-group">
+        <label>Qty</label>
+        <input type="number" name="system.qty" value="{{system.qty}}" min="0"/>
+      </div>
+      <div class="form-group">
+        <label title="Max per stack. 0 = not stackable.">Stack Limit</label>
+        <input type="number" name="system.stackLimit" value="{{system.stackLimit}}" min="0"/>
+      </div>
+      <div class="form-group">
+        <label>Cost</label>
+        <input type="number" name="system.cost" value="{{system.cost}}" min="0"/>
+      </div>
+    </div>
+
     {{!-- WEAPON FIELDS --}}
     {{#if system.isWeapon}}
     <div class="section-title">Weapon Details</div>
-    <div class="item-detail-grid">
+    <div class="item-mgmt-grid">
       <div class="form-group">
         <label>Weapon Type</label>
         <select name="system.weaponType">
@@ -90,20 +115,6 @@
         </select>
       </div>
       <div class="form-group">
-        <label>Gear Type</label>
-        <input type="text" name="system.gearType" value="{{system.gearType}}" placeholder="e.g. Melee 2"/>
-      </div>
-      <div class="form-group">
-        <label>Subtype</label>
-        <select name="system.subtype">
-          <option value="slash"       {{#if (eq system.subtype "slash")}}selected{{/if}}>Slash</option>
-          <option value="pierce"      {{#if (eq system.subtype "pierce")}}selected{{/if}}>Pierce</option>
-          <option value="smash"       {{#if (eq system.subtype "smash")}}selected{{/if}}>Smash</option>
-          <option value="slash/smash" {{#if (eq system.subtype "slash/smash")}}selected{{/if}}>Slash / Smash</option>
-          <option value="n/a"         {{#if (eq system.subtype "n/a")}}selected{{/if}}>N/A</option>
-        </select>
-      </div>
-      <div class="form-group">
         <label>Attack Stat</label>
         <select name="system.attackStat">
           <option value="STR" {{#if (eq system.attackStat "STR")}}selected{{/if}}>STR</option>
@@ -124,29 +135,15 @@
     {{!-- ARMOR FIELDS --}}
     {{#if system.isArmor}}
     <div class="section-title">Armor Details</div>
-    <div class="item-detail-grid">
-      <div class="form-group">
-        <label>Gear Type / Tier</label>
-        <input type="text" name="system.gearType" value="{{system.gearType}}" placeholder="e.g. 3"/>
-      </div>
-      <div class="form-group">
-        <label>Armor Slot</label>
-        <input type="text" name="system.armorSlot" value="{{system.armorSlot}}" placeholder="Chest / Head / Legs"/>
-      </div>
-    </div>
-    {{/if}}
-
-    {{!-- CONSUMABLE/COMMON/SPECIAL --}}
-    {{#if system.isOther}}
-    <div class="section-title">Item Details</div>
-    <div class="item-detail-grid">
-      <div class="form-group">
-        <label>Subtype</label>
-        <input type="text" name="system.subtype" value="{{system.subtype}}" placeholder="e.g. Potion, Trap, Use"/>
-      </div>
-      <div class="form-group">
-        <label>Expires After Use</label>
-        <input type="checkbox" name="system.expires" {{#if system.expires}}checked{{/if}}/>
+    <div style="display:flex;justify-content:center;">
+      <div class="form-group" style="display:flex;flex-direction:column;gap:3px;align-items:center;width:160px;">
+        <label style="font-size:10px;color:var(--db-dim);text-transform:uppercase;letter-spacing:0.5px;">Armor Type</label>
+        <select name="system.armorSlotType" style="width:100%;">
+          <option value=""       {{#if (eq system.armorSlotType "")}}selected{{/if}}>— Select —</option>
+          <option value="cloth"  {{#if (eq system.armorSlotType "cloth")}}selected{{/if}}>Cloth</option>
+          <option value="leather"{{#if (eq system.armorSlotType "leather")}}selected{{/if}}>Leather</option>
+          <option value="plate"  {{#if (eq system.armorSlotType "plate")}}selected{{/if}}>Plate</option>
+        </select>
       </div>
     </div>
     {{/if}}
@@ -155,23 +152,92 @@
     <div class="section-title">Effect / Description</div>
     <textarea name="system.effect" rows="4" placeholder="Describe the item effect...">{{system.effect}}</textarea>
 
-    {{!-- QUANTITY --}}
-    <div class="section-title">Quantity</div>
-    <div class="item-detail-grid">
-      <div class="form-group">
-        <label>Qty</label>
-        <input type="number" name="system.qty" value="{{system.qty}}" min="0"/>
-      </div>
-      <div class="form-group">
-        <label>Equipped</label>
-        <input type="checkbox" name="system.equipped" {{#if system.equipped}}checked{{/if}}/>
-      </div>
-    </div>
-
   </div>
 
   {{!-- ═══ TAB: BONUSES ═══ --}}
   <div class="sheet-body tab" data-tab="item-stats" data-group="primary">
+
+    {{#if hasEnhData}}
+    <div class="section-title">Enhancement Slots</div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
+      {{#if isGM}}
+        {{#if showGrowthPath}}
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;padding:4px 8px;background:var(--db-panel,#1a1a2e);border:1px solid var(--db-border,#2a2a4a);border-radius:4px;overflow:hidden;">
+          <span style="font-size:10px;color:var(--db-dim,#666);flex-shrink:0;">GROWTH PATH</span>
+          <select class="db-growth-path-select" style="flex:1;min-width:0;font-size:11px;">
+            {{#each growthPathOptions}}
+            <option value="{{id}}" {{#if (eq id ../selectedGrowthPath)}}selected{{/if}}>{{name}}</option>
+            {{/each}}
+          </select>
+          <button type="button" class="db-growth-path-manage" title="Manage custom paths" style="flex-shrink:0;width:22px;height:22px;min-width:0;padding:0;font-size:11px;line-height:1;">⚙</button>
+        </div>
+        {{/if}}
+        {{#each enhSlotsGM}}
+        <div class="db-enh-gm-row" data-slot="{{slotIndex}}" style="background:var(--db-panel,#1a1a2e);border:1px solid var(--db-border,#2a2a4a);border-radius:4px;padding:5px 8px;">
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="db-enh-slot-num" style="flex-shrink:0;min-width:18px;">{{slotIndex}}</span>
+            <label style="display:flex;align-items:center;gap:3px;font-size:9px;color:var(--db-dim,#666);flex-shrink:0;cursor:pointer;">
+              <input type="checkbox" class="db-enh-gm-ability-toggle" {{#if isAbility}}checked{{/if}} style="width:11px;height:11px;margin:0;cursor:pointer;"/>
+              ABILITY
+            </label>
+            {{#if isSlot0}}
+            <div class="db-enh-gm-stat-block" style="flex:1;{{#if isAbility}}display:none!important{{/if}}">
+              <span style="font-size:12px;color:var(--db-gold,#c9a84c);font-weight:bold;">{{slot0BaseSummary}}</span>
+            </div>
+            {{else}}
+            <div class="db-enh-gm-stat-block" style="display:flex;align-items:center;gap:4px;flex:1;{{#if isAbility}}display:none!important{{/if}}">
+              <select class="db-enh-gm-stat" style="flex:2;font-size:11px;">
+                <option value="">— EMPTY —</option>
+                <option value="dam" {{#if (eq stat "dam")}}selected{{/if}}>DAM</option>
+                <option value="str" {{#if (eq stat "str")}}selected{{/if}}>STR</option>
+                <option value="con" {{#if (eq stat "con")}}selected{{/if}}>CON</option>
+                <option value="agi" {{#if (eq stat "agi")}}selected{{/if}}>AGI</option>
+                <option value="dex" {{#if (eq stat "dex")}}selected{{/if}}>DEX</option>
+                <option value="int" {{#if (eq stat "int")}}selected{{/if}}>INT</option>
+                <option value="spr" {{#if (eq stat "spr")}}selected{{/if}}>SPR</option>
+                <option value="for" {{#if (eq stat "for")}}selected{{/if}}>FOR</option>
+                <option value="wil" {{#if (eq stat "wil")}}selected{{/if}}>WIL</option>
+                <option value="cha" {{#if (eq stat "cha")}}selected{{/if}}>CHA</option>
+                <option value="brk" {{#if (eq stat "brk")}}selected{{/if}}>BRK</option>
+                <option value="ass" {{#if (eq stat "ass")}}selected{{/if}}>ASS</option>
+                <option value="pr"  {{#if (eq stat "pr")}}selected{{/if}}>PR</option>
+                <option value="mr"  {{#if (eq stat "mr")}}selected{{/if}}>MR</option>
+                <option value="ar"  {{#if (eq stat "ar")}}selected{{/if}}>AR</option>
+                <option value="hp"  {{#if (eq stat "hp")}}selected{{/if}}>HP</option>
+                <option value="ki"  {{#if (eq stat "ki")}}selected{{/if}}>KI</option>
+                <option value="mv"  {{#if (eq stat "mv")}}selected{{/if}}>MV</option>
+                <option value="ap"  {{#if (eq stat "ap")}}selected{{/if}}>AP</option>
+              </select>
+              <span style="font-size:10px;color:var(--db-dim,#666);">+</span>
+              <input type="number" class="db-enh-gm-val" value="{{value}}" min="0" max="99" style="width:40px;text-align:center;font-size:11px;"/>
+              <select class="db-enh-gm-essence" style="flex:1;font-size:10px;">
+                <option value="">no essence</option>
+                <option value="fire"   {{#if (eq essence "fire")}}selected{{/if}}>Fire</option>
+                <option value="water"  {{#if (eq essence "water")}}selected{{/if}}>Water</option>
+                <option value="earth"  {{#if (eq essence "earth")}}selected{{/if}}>Earth</option>
+                <option value="air"    {{#if (eq essence "air")}}selected{{/if}}>Air</option>
+                <option value="spirit" {{#if (eq essence "spirit")}}selected{{/if}}>Spirit</option>
+              </select>
+            </div>
+            {{/if}}
+            <div class="db-enh-gm-ability-block" style="flex:1;{{#unless isAbility}}display:none{{/unless}}">
+              <input type="text" class="db-enh-gm-macro" value="{{macroName}}" placeholder="Macro name…" style="width:100%;font-size:11px;"/>
+            </div>
+            {{#if isFilled}}<button type="button" class="db-enh-gm-clear" data-slot="{{slotIndex}}" title="Clear slot">✕</button>{{/if}}
+          </div>
+        </div>
+        {{/each}}
+      {{else}}
+        {{#each enhSlots}}
+        <div class="db-enh-slot slot-{{type}}" style="pointer-events:none;">
+          <span class="db-enh-slot-num">{{slotIndex}}</span>
+          <span class="db-enh-slot-stat">{{label}}{{#if growthLabel}} <span style="font-size:9px;color:var(--db-dim,#666);margin-left:6px;">{{growthLabel}}</span>{{/if}}</span>
+          {{#if badge}}<span class="db-enh-slot-badge">[{{badge}}]</span>{{/if}}
+        </div>
+        {{/each}}
+      {{/if}}
+    </div>
+    {{/if}}
 
     <div class="section-title">Stat Bonuses <span style="font-size:9px;color:#7a8090;text-transform:none;letter-spacing:0;font-weight:400">(applied to character when Equipped)</span></div>
     <div class="bonus-grid">
@@ -198,14 +264,62 @@
 
   </div>
 
-  {{!-- ═══ TAB: RECIPE ═══ --}}
-  <div class="sheet-body tab" data-tab="item-recipe" data-group="primary">
+  {{!-- ═══ TAB: FORGE ═══ --}}
+  <div class="sheet-body tab" data-tab="item-forge" data-group="primary">
 
-    <div class="section-title">Crafting Recipe</div>
-    <textarea name="system.recipe" rows="3" placeholder="e.g. 3 Ore, 1 Wood">{{system.recipe}}</textarea>
+    <div class="section-title">Forge Status</div>
+    <div class="item-mgmt-grid">
+      <div class="form-group">
+        <label>Item Level</label>
+        {{#if isGM}}<input type="number" name="system.upgradeLevel" value="{{system.upgradeLevel}}" min="0" max="7"/>
+        {{else}}<div class="item-rarity-display">{{system.upgradeLevel}}</div>{{/if}}
+      </div>
+      <div class="form-group">
+        <label>Rarity</label>
+        <div class="item-rarity-display" style="color:{{rarityColor}};">{{rarityLabel}}</div>
+      </div>
+    </div>
 
-    <div class="section-title" style="margin-top:1rem">Upgrade Notes</div>
-    <textarea name="system.upgradeNotes" rows="3" placeholder="Upgrade path or requirements...">{{system.upgradeNotes}}</textarea>
+    <div class="section-title" style="margin-top:10px;">Materials</div>
+    <div class="item-mgmt-grid">
+      <div class="form-group">
+        <label>Material Main</label>
+        {{#if isGM}}
+        <select name="system.forgePath">
+          <option value=""        {{#if (eq system.forgePath "")}}selected{{/if}}>— None —</option>
+          <option value="ore"     {{#if (eq system.forgePath "ore")}}selected{{/if}}>Ore</option>
+          <option value="wood"    {{#if (eq system.forgePath "wood")}}selected{{/if}}>Wood</option>
+          <option value="leather" {{#if (eq system.forgePath "leather")}}selected{{/if}}>Leather</option>
+          <option value="fabric"  {{#if (eq system.forgePath "fabric")}}selected{{/if}}>Fabric</option>
+        </select>
+        {{else}}<div class="item-rarity-display">{{system.forgePath}}</div>{{/if}}
+      </div>
+      <div class="form-group">
+        <label>Material Secondary</label>
+        {{#if isGM}}
+        <select name="system.forgePathSecondary">
+          <option value=""        {{#if (eq system.forgePathSecondary "")}}selected{{/if}}>— None —</option>
+          <option value="ore"     {{#if (eq system.forgePathSecondary "ore")}}selected{{/if}}>Ore</option>
+          <option value="wood"    {{#if (eq system.forgePathSecondary "wood")}}selected{{/if}}>Wood</option>
+          <option value="leather" {{#if (eq system.forgePathSecondary "leather")}}selected{{/if}}>Leather</option>
+          <option value="fabric"  {{#if (eq system.forgePathSecondary "fabric")}}selected{{/if}}>Fabric</option>
+        </select>
+        {{else}}<div class="item-rarity-display">{{system.forgePathSecondary}}</div>{{/if}}
+      </div>
+      {{#if system.isWeapon}}
+      <div class="form-group">
+        <label>2H Weapon</label>
+        <input type="checkbox" name="system.isTwoHanded" {{#if system.isTwoHanded}}checked{{/if}} {{#unless isGM}}disabled{{/unless}}/>
+      </div>
+      {{/if}}
+    </div>
+
+    <div class="section-title" style="margin-top:10px;">Crafting Notes</div>
+    {{#if isGM}}
+    <textarea name="system.recipe" rows="3" placeholder="e.g. 3 Ore, 1 Wood — craft requirements or lore notes">{{system.recipe}}</textarea>
+    {{else}}
+    <div style="font-size:12px;color:#aaa;padding:6px;min-height:48px;">{{system.recipe}}</div>
+    {{/if}}
 
   </div>
 

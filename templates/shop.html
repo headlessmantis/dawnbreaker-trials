@@ -1,0 +1,422 @@
+{{!-- Dawnbreaker Trials — Supply Terminal --}}
+<div class="db-shop-wrap">
+
+  {{!-- Terminal header --}}
+  <div class="db-shop-topbar">
+    <div class="db-shop-topbar-left">
+      <span class="db-shop-terminal-label">SUPPLY TERMINAL</span>
+      <span class="db-shop-terminal-sep">·</span>
+      <span class="db-shop-terminal-name">{{shopName}}</span>
+    </div>
+    {{#if canBuy}}
+    <div class="db-shop-credits-block">
+      <span class="db-shop-credits-label">BALANCE</span>
+      <span class="db-shop-credits-val">{{credits}}<span class="db-shop-credits-unit">cr</span></span>
+    </div>
+    {{/if}}
+  </div>
+
+  {{!-- Mode tabs --}}
+  <div class="db-shop-tabs">
+    {{#if npcCaps.hasShop}}
+    <button type="button" class="db-mode-tab {{#if (eq mode "buy")}}active{{/if}}" data-mode="buy">BUY</button>
+    {{#if canBuy}}<button type="button" class="db-mode-tab {{#if (eq mode "sell")}}active{{/if}}" data-mode="sell">SELL</button>{{/if}}
+    {{/if}}
+    {{#if npcCaps.hasBlacksmith}}
+    <button type="button" class="db-mode-tab {{#if (eq mode "forge")}}active{{/if}}" data-mode="forge">FORGE</button>
+    {{/if}}
+    {{#if npcCaps.hasEnhancer}}
+    <button type="button" class="db-mode-tab {{#if (eq mode "enhance")}}active{{/if}}" data-mode="enhance">ENHANCE</button>
+    {{/if}}
+  </div>
+
+  {{!-- ═══ BUY MODE ═══ --}}
+  {{#if (eq mode "buy")}}
+  <div class="db-shop-body">
+
+    {{!-- Categories --}}
+    <div class="db-shop-cats">
+      <div class="db-shop-cats-header">SELECT_DEPT.exe</div>
+      {{#each categories}}
+      <div class="db-cat-row {{#if active}}active{{/if}}" data-cat="{{name}}">
+        <span class="db-cat-tag">[{{abbrev}}]</span>
+        <span class="db-cat-name">{{name}}</span>
+        <span class="db-cat-arrow">&gt;&gt;</span>
+      </div>
+      {{else}}
+      <div class="db-cat-empty">No categories</div>
+      {{/each}}
+    </div>
+
+    {{!-- Item list --}}
+    <div class="db-shop-list">
+      {{#each items}}
+      <div class="db-shop-item-row {{#if isSelected}}active{{/if}}" data-item-id="{{id}}">
+        <img src="{{img}}" class="db-shop-item-thumb"/>
+        <span class="db-shop-item-lname">{{name}}</span>
+        <span class="db-shop-item-lprice {{#unless canAfford}}unaffordable{{/unless}}">{{price}}¢</span>
+        <span class="db-shop-item-arrow">&gt;&gt;</span>
+      </div>
+      {{else}}
+      <div class="db-shop-empty-list">NO ITEMS</div>
+      {{/each}}
+    </div>
+
+    {{!-- Detail + cart --}}
+    <div class="db-shop-right">
+      <div class="db-shop-detail">
+        <span class="db-corner db-corner-tl"></span>
+        <span class="db-corner db-corner-tr"></span>
+        <span class="db-corner db-corner-bl"></span>
+        <span class="db-corner db-corner-br"></span>
+        {{#if selected}}
+        <div class="db-detail-img-frame">
+          <img src="{{selected.img}}" class="db-shop-detail-img"/>
+        </div>
+        <div class="db-shop-detail-name">{{selected.name}}</div>
+        <div class="db-detail-divider"><span class="db-detail-divider-gem">◆</span></div>
+        <div class="db-shop-detail-price {{#unless selected.canAfford}}unaffordable{{/unless}}">{{selected.price}} Credits</div>
+        <div class="db-shop-detail-stock">
+          {{#if selected.inStock}}
+            {{#if (gte selected.qty 0)}}{{selected.qty}} IN STOCK{{else}}∞ IN STOCK{{/if}}
+          {{else}}<span style="color:var(--db-danger);">OUT OF STOCK</span>{{/if}}
+        </div>
+        {{#if selected.description}}<div class="db-shop-detail-desc">{{selected.description}}</div>{{/if}}
+        {{#if canBuy}}
+        <button type="button" class="shop-add-to-cart-btn" data-item-id="{{selected.id}}" {{#unless selected.inStock}}disabled{{/unless}}>
+          {{#if selected.inStock}}ADD TO CART{{else}}OUT OF STOCK{{/if}}
+        </button>
+        {{/if}}
+        {{else}}
+        <div class="db-shop-empty-detail">SELECT AN ITEM</div>
+        {{/if}}
+      </div>
+
+      {{!-- Cart --}}
+      {{#if canBuy}}
+      <div class="db-shop-cart">
+        <div class="db-cart-header">CART</div>
+        {{#if cart.length}}
+        <div class="db-cart-items">
+          {{#each cart}}
+          <div class="db-cart-row">
+            <img src="{{img}}" class="db-cart-thumb"/>
+            <span class="db-cart-name">{{label}}</span>
+            <input type="number" class="db-cart-qty" data-item-id="{{itemId}}" value="{{qty}}" min="1"/>
+            <span class="db-cart-line-price">{{price}}¢</span>
+            <button type="button" class="db-cart-remove-btn" data-item-id="{{itemId}}">✕</button>
+          </div>
+          {{/each}}
+        </div>
+        <div class="db-cart-footer">
+          <span class="db-cart-total-label">TOTAL</span>
+          <span class="db-cart-total {{#unless canAffordCart}}unaffordable{{/unless}}">{{cartTotal}}¢</span>
+          <button type="button" class="db-cart-checkout-btn" {{#unless canAffordCart}}disabled{{/unless}}>CHECKOUT</button>
+        </div>
+        {{else}}
+        <div class="db-cart-empty">CART EMPTY</div>
+        {{/if}}
+      </div>
+      {{/if}}
+    </div>
+
+    {{!-- Dialogue portraits --}}
+    <div class="db-shop-portrait">
+      <div class="db-portrait-slot db-portrait-slot-player">
+        <div class="db-portrait-frame">
+          {{#if buyerImg}}<img src="{{buyerImg}}" class="db-portrait-img db-portrait-flip"/>{{/if}}
+        </div>
+        <div class="db-portrait-name">{{buyerName}}</div>
+      </div>
+      <div class="db-portrait-vs">⬡</div>
+      <div class="db-portrait-slot db-portrait-slot-npc">
+        <div class="db-portrait-frame">
+          {{#if npcImg}}<img src="{{npcImg}}" class="db-portrait-img"/>{{/if}}
+        </div>
+        <div class="db-portrait-name">{{npcName}}</div>
+      </div>
+    </div>
+
+  </div>
+  {{/if}}
+
+  {{!-- ═══ SELL MODE ═══ --}}
+  {{#if (eq mode "sell")}}
+  <div class="db-shop-body">
+
+    {{!-- Inventory list --}}
+    <div class="db-shop-list db-sell-list">
+      <div class="db-shop-cats-header">INVENTORY</div>
+      {{#each sellItems}}
+      <div class="db-sell-item-row {{#if isSelected}}active{{/if}}" data-item-id="{{id}}">
+        <img src="{{img}}" class="db-shop-item-thumb"/>
+        <span class="db-shop-item-lname">{{label}}</span>
+        <span class="db-shop-item-lprice">{{sellPrice}}¢</span>
+        <span class="db-shop-item-arrow">&gt;&gt;</span>
+      </div>
+      {{else}}
+      <div class="db-shop-empty-list">NO SELLABLE ITEMS</div>
+      {{/each}}
+    </div>
+
+    {{!-- Dialogue portraits --}}
+    <div class="db-shop-portrait">
+      <div class="db-portrait-slot db-portrait-slot-player">
+        <div class="db-portrait-frame">
+          {{#if buyerImg}}<img src="{{buyerImg}}" class="db-portrait-img db-portrait-flip"/>{{/if}}
+        </div>
+        <div class="db-portrait-name">{{buyerName}}</div>
+      </div>
+      <div class="db-portrait-vs">⬡</div>
+      <div class="db-portrait-slot db-portrait-slot-npc">
+        <div class="db-portrait-frame">
+          {{#if npcImg}}<img src="{{npcImg}}" class="db-portrait-img"/>{{/if}}
+        </div>
+        <div class="db-portrait-name">{{npcName}}</div>
+      </div>
+    </div>
+
+    {{!-- Sell detail + cart --}}
+    <div class="db-shop-right">
+      <div class="db-shop-detail">
+        <span class="db-corner db-corner-tl"></span>
+        <span class="db-corner db-corner-tr"></span>
+        <span class="db-corner db-corner-bl"></span>
+        <span class="db-corner db-corner-br"></span>
+        {{#if selSell}}
+        <div class="db-detail-img-frame">
+          <img src="{{selSell.img}}" class="db-shop-detail-img"/>
+        </div>
+        <div class="db-shop-detail-name">{{selSell.label}}</div>
+        <div class="db-detail-divider"><span class="db-detail-divider-gem">◆</span></div>
+        <div class="db-shop-detail-price">{{selSell.sellPrice}} Credits</div>
+        <div class="db-shop-detail-stock">QTY IN INVENTORY: {{selSell.qty}}</div>
+        {{#if canBuy}}
+        <button type="button" class="shop-add-to-cart-btn shop-add-to-sell-btn" data-item-id="{{selSell.id}}">+ ADD TO SELL</button>
+        {{/if}}
+        {{else}}
+        <div class="db-shop-empty-detail">SELECT AN ITEM TO SELL</div>
+        {{/if}}
+      </div>
+
+      <div class="db-shop-cart">
+        <div class="db-cart-header">SELLING</div>
+        {{#if sellCart.length}}
+        <div class="db-cart-items">
+          {{#each sellCart}}
+          <div class="db-cart-row">
+            <img src="{{img}}" class="db-cart-thumb"/>
+            <span class="db-cart-name">{{label}}</span>
+            <input type="number" class="db-sell-cart-qty" data-item-id="{{itemId}}" value="{{qty}}" min="1" max="{{maxQty}}"/>
+            <span class="db-cart-line-price">{{sellPrice}}¢</span>
+            <button type="button" class="db-cart-remove-btn db-sell-cart-remove-btn" data-item-id="{{itemId}}">✕</button>
+          </div>
+          {{/each}}
+        </div>
+        <div class="db-cart-footer">
+          <span class="db-cart-total-label">EARN</span>
+          <span class="db-cart-total" style="color:var(--db-accent2);">+{{sellTotal}}¢</span>
+          <button type="button" class="db-cart-checkout-btn db-sell-checkout-btn">SELL ALL</button>
+        </div>
+        {{else}}
+        <div class="db-cart-empty">NOTHING TO SELL</div>
+        {{/if}}
+      </div>
+    </div>
+
+  </div>
+  {{/if}}
+
+  {{!-- ═══ FORGE MODE ═══ --}}
+  {{#if (eq mode "forge")}}
+  <div class="db-shop-body">
+
+    <div class="db-smith-list">
+      <div class="db-smith-list-header">▶ SELECT ITEM</div>
+      {{#each upgradeableItems}}
+      <div class="db-smith-item-row {{#if isSelected}}active{{/if}}" data-item-id="{{id}}">
+        <img src="{{img}}" class="db-smith-item-thumb"/>
+        <div class="db-smith-item-info">
+          <span class="db-smith-item-name" style="color:{{rarityColor}}">{{name}}</span>
+          <span class="db-smith-item-level">{{#if atMax}}MAX LEVEL{{else}}+{{level}} — {{rarityLabel}}{{/if}}</span>
+        </div>
+        <span class="db-smith-item-arrow">&gt;&gt;</span>
+      </div>
+      {{else}}
+      <div class="db-smith-empty">No upgradeable items</div>
+      {{/each}}
+    </div>
+
+    <div class="db-smith-detail">
+      <span class="db-corner db-corner-tl"></span>
+      <span class="db-corner db-corner-tr"></span>
+      <span class="db-corner db-corner-bl"></span>
+      <span class="db-corner db-corner-br"></span>
+      {{#if selectedItem}}
+      <div class="db-smith-detail-header">
+        <img src="{{selectedItem.img}}" class="db-smith-detail-img"/>
+        <div class="db-smith-detail-title">
+          <span class="db-smith-detail-name" style="color:{{selectedItem.rarityColor}}">{{selectedItem.name}}</span>
+          <span class="db-smith-detail-rarity rarity-{{selectedItem.rarity}}">{{selectedItem.rarityLabel}}</span>
+          <span class="db-smith-detail-level">
+            {{#if selectedItem.atMax}}MAX UPGRADE REACHED{{else}}
+              UPGRADE +{{selectedItem.level}} → +{{selectedItem.nextLevel}}
+              {{#if selectedItem.crossesRarityBoundary}}<span style="color:var(--db-accent)"> [BECOMES {{selectedItem.nextRarity}}]</span>{{/if}}
+            {{/if}}
+          </span>
+        </div>
+      </div>
+      <div class="db-smith-divider"><span class="db-smith-divider-gem">◆</span></div>
+      <div class="db-smith-slots">
+        <div class="db-smith-slots-title">▶ ENHANCEMENT SLOTS</div>
+        {{#each slotRows}}
+        <div class="db-smith-slot-row {{#if isFixed}}slot-fixed{{else if isFilled}}slot-filled{{else}}slot-empty{{/if}}">
+          <span class="db-smith-slot-label">SLOT {{slotIndex}}</span>
+          <span class="db-smith-slot-value">{{label}}</span>
+          {{#if badge}}<span class="db-smith-slot-type">[{{badge}}]</span>{{/if}}
+        </div>
+        {{/each}}
+      </div>
+      {{#unless selectedItem.atMax}}
+      <div class="db-smith-divider"><span class="db-smith-divider-gem">◆</span></div>
+      <table class="db-smith-cost-table">
+        <tr><th>MATERIAL</th><th>REQUIRED</th><th>IN STORAGE</th></tr>
+        {{#each costRows}}
+        <tr class="{{#if canAfford}}db-smith-cost-row-have{{else}}db-smith-cost-row-need{{/if}}">
+          <td>{{label}}</td><td>{{need}}</td><td>{{have}}</td>
+        </tr>
+        {{/each}}
+      </table>
+      <button type="button" class="db-smith-forge-btn" {{#unless canAfford}}disabled{{/unless}}>FORGE +{{selectedItem.nextLevel}}</button>
+      {{/unless}}
+      {{else}}
+      <div class="db-smith-empty">SELECT AN ITEM TO UPGRADE</div>
+      {{/if}}
+    </div>
+
+    <div class="db-shop-portrait">
+      <div class="db-portrait-slot db-portrait-slot-player">
+        <div class="db-portrait-frame">{{#if buyerImg}}<img src="{{buyerImg}}" class="db-portrait-img db-portrait-flip"/>{{/if}}</div>
+        <div class="db-portrait-name">{{buyerName}}</div>
+      </div>
+      <div class="db-portrait-vs">⬡</div>
+      <div class="db-portrait-slot db-portrait-slot-npc">
+        <div class="db-portrait-frame">{{#if npcImg}}<img src="{{npcImg}}" class="db-portrait-img"/>{{/if}}</div>
+        <div class="db-portrait-name">{{npcName}}</div>
+      </div>
+    </div>
+
+  </div>
+  {{/if}}
+
+  {{!-- ═══ ENHANCE MODE ═══ --}}
+  {{#if (eq mode "enhance")}}
+  <div class="db-shop-body">
+
+    <div class="db-enhance-picker">
+      <div class="db-enhance-picker-header">▶ SELECT ITEM</div>
+      {{#each itemList}}
+      <div class="db-enhance-item-row {{#if isSelected}}active{{/if}}" data-item-id="{{id}}">
+        <img src="{{img}}" class="db-enhance-item-thumb"/>
+        <span class="db-enhance-item-name" style="color:{{rarityColor}}">{{name}}</span>
+        <span class="db-enhance-item-slots">{{slotsLabel}}</span>
+      </div>
+      {{else}}
+      <div class="db-enhance-empty">No enhanceable items</div>
+      {{/each}}
+    </div>
+
+    <div class="db-enhance-panel">
+      <span class="db-corner db-corner-tl"></span>
+      <span class="db-corner db-corner-tr"></span>
+      <span class="db-corner db-corner-bl"></span>
+      <span class="db-corner db-corner-br"></span>
+      {{#if selectedItem}}
+      <div class="db-smith-detail-header">
+        <img src="{{selectedItem.img}}" class="db-smith-detail-img"/>
+        <div class="db-smith-detail-title">
+          <span class="db-smith-detail-name" style="color:{{selectedItem.rarityColor}}">{{selectedItem.name}}</span>
+          <span class="db-smith-detail-rarity rarity-{{selectedItem.rarity}}">{{selectedItem.rarityLabel}} +{{selectedItem.level}}</span>
+          <span class="db-smith-detail-level">{{#if selectedItem.isWeapon}}WEAPON — USE EPHI SHARDS{{else}}ARMOR — USE AMYNTI SHARDS{{/if}}</span>
+        </div>
+      </div>
+      <div class="db-smith-divider"><span class="db-smith-divider-gem">◆</span></div>
+      <div style="margin-bottom:12px;">
+        <div class="db-enhance-shards-title">▶ ENHANCEMENT SLOTS — click a slot to select it</div>
+        {{#each slotRows}}
+        <div class="db-enh-slot slot-{{type}} {{#if isSelected}}slot-selected{{/if}}">
+          <span class="db-enh-slot-num">{{slotIndex}}</span>
+          <span class="db-enh-slot-stat">{{label}}</span>
+          {{#if badge}}<span class="db-enh-slot-badge">[{{badge}}]</span>{{/if}}
+          {{#unless isFixed}}
+            {{#unless isGMFixed}}
+              {{#if isFilled}}
+              <button type="button" class="db-enh-slot-select" data-slot="{{slotIndex}}" style="width:auto!important">REROLL ({{rerollCost}} CARMINE)</button>
+              {{else}}
+              <button type="button" class="db-enh-slot-select" data-slot="{{slotIndex}}" style="width:auto!important">FILL SLOT</button>
+              {{/if}}
+            {{/unless}}
+          {{/unless}}
+        </div>
+        {{/each}}
+      </div>
+      {{#if selectedSlot}}
+      <div class="db-smith-divider"><span class="db-smith-divider-gem">◆</span></div>
+      <div class="db-enhance-shards">
+        <div class="db-enhance-shards-title">▶ ESSENCE BIAS (OPTIONAL)</div>
+        <div class="db-enhance-shard-row">
+          <label>ESSENCE</label>
+          <select class="db-enhance-essence-select">
+            {{#each essenceOptions}}
+            <option value="{{value}}" {{#if (eq value ../selectedEssence)}}selected{{/if}}>{{label}}</option>
+            {{/each}}
+          </select>
+          {{#if selectedEssence}}
+          <label style="margin-left:8px;">QTY</label>
+          <input type="number" class="db-enhance-essence-qty" min="1" max="{{essenceQtyOwned}}" value="{{selectedEssenceQty}}" style="width:50px;"/>
+          {{/if}}
+        </div>
+        <div class="db-enhance-shard-cost">
+          {{#if rerollCost}}Reroll cost: {{rerollCost}}x Carmine Shard{{else}}Cost: 1x {{#if selectedItem.isWeapon}}Ephi{{else}}Amynti{{/if}} Shard{{/if}}
+          {{#if selectedEssence}} + {{selectedEssenceQty}}x Essence (+{{essenceBiasPct}}% chance to related stats){{/if}}
+        </div>
+      </div>
+      {{#if pendingConfirm}}
+      <div class="db-enhance-confirm-box">
+        <div class="db-enhance-confirm-text">{{pendingConfirm.actionLabel}}</div>
+        <div class="db-enhance-confirm-cost">Cost: {{pendingConfirm.costLabel}}</div>
+        <div class="db-enhance-confirm-buttons">
+          <button type="button" class="db-enhance-confirm-yes-btn">{{#if pendingConfirm.isReroll}}CONFIRM REROLL{{else}}CONFIRM ENHANCE{{/if}}</button>
+          <button type="button" class="db-enhance-confirm-cancel-btn">CANCEL</button>
+        </div>
+      </div>
+      {{else}}
+      <button type="button" class="db-enhance-apply-btn" {{#unless canApply}}disabled{{/unless}}>
+        {{#if rerollCost}}REROLL SLOT {{selectedSlot}}{{else}}ENHANCE SLOT {{selectedSlot}}{{/if}}
+      </button>
+      {{/if}}
+      {{/if}}
+      {{#if lastResult}}
+      <div class="db-enhance-roll-result visible">▶ ROLLED: {{lastResult.label}} +{{lastResult.value}}{{#if lastResult.essence}} [{{lastResult.essence}}]{{/if}}</div>
+      {{/if}}
+      {{else}}
+      <div class="db-enhance-empty">SELECT AN ITEM TO ENHANCE</div>
+      {{/if}}
+    </div>
+
+    <div class="db-shop-portrait">
+      <div class="db-portrait-slot db-portrait-slot-player">
+        <div class="db-portrait-frame">{{#if buyerImg}}<img src="{{buyerImg}}" class="db-portrait-img db-portrait-flip"/>{{/if}}</div>
+        <div class="db-portrait-name">{{buyerName}}</div>
+      </div>
+      <div class="db-portrait-vs">⬡</div>
+      <div class="db-portrait-slot db-portrait-slot-npc">
+        <div class="db-portrait-frame">{{#if npcImg}}<img src="{{npcImg}}" class="db-portrait-img"/>{{/if}}</div>
+        <div class="db-portrait-name">{{npcName}}</div>
+      </div>
+    </div>
+
+  </div>
+  {{/if}}
+
+</div>

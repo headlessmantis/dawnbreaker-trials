@@ -1,0 +1,82 @@
+{{!-- Dawnbreaker Trials — Shop Table Manager (GM only) --}}
+<div class="db-tables-wrap">
+
+  <div class="db-tables-sidebar">
+    <div class="db-tables-sidebar-header">
+      Tables
+      <button type="button" class="db-table-new-btn" title="New Table">+</button>
+    </div>
+    {{#each tables}}
+    <div class="db-table-list-item {{#if active}}active{{/if}}" data-table-id="{{id}}">
+      {{name}}
+    </div>
+    {{else}}
+    <div class="db-tables-empty">No tables yet.</div>
+    {{/each}}
+  </div>
+
+  <div class="db-tables-main">
+    {{#if activeTable}}
+
+    <div class="db-tables-toolbar">
+      <div class="db-table-name-row">
+        <span class="db-table-name-label">Table Name</span>
+        <input type="text" class="db-table-name-input" value="{{activeTable.name}}" placeholder="Table name…"/>
+      </div>
+      <div class="db-table-btn-row">
+        <button type="button" class="db-item-add-btn">+ Add Item</button>
+        <button type="button" class="db-table-delete-btn">🗑 Delete Table</button>
+      </div>
+    </div>
+
+    <div class="db-tables-drop-hint">Drag items from the Items Directory into this panel to add them.</div>
+
+    {{#if items.length}}
+    <table class="db-items-table">
+      <thead>
+        <tr>
+          <th class="db-col-img"></th>
+          <th class="db-col-name">Name</th>
+          <th class="db-col-cat">Category</th>
+          <th class="db-col-price">Price</th>
+          <th class="db-col-qty">Stock<br/><span style="font-weight:400;font-size:10px;">−1 = ∞</span></th>
+          <th class="db-col-desc">Description</th>
+          <th class="db-col-del"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each items}}
+        <tr data-item-id="{{id}}">
+          <td class="db-col-img"><img src="{{img}}" class="db-item-thumb" title="{{name}}"/></td>
+          <td class="db-col-name">
+            <input type="text" class="db-item-field" data-field="name" value="{{name}}"/>
+          </td>
+          <td class="db-col-cat">
+            <input type="text" class="db-item-field" data-field="category" value="{{category}}" placeholder="General"/>
+          </td>
+          <td class="db-col-price">
+            <input type="number" class="db-item-field" data-field="price" value="{{price}}" min="0"/>
+          </td>
+          <td class="db-col-qty">
+            <input type="number" class="db-item-field" data-field="qty" value="{{qty}}" min="-1"/>
+          </td>
+          <td class="db-col-desc">
+            <input type="text" class="db-item-field" data-field="description" value="{{description}}" placeholder="Optional description…"/>
+          </td>
+          <td class="db-col-del">
+            <button type="button" class="db-item-del-btn" data-item-id="{{id}}" title="Remove">✕</button>
+          </td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="db-items-empty">No items in this table. Drag items here or click + Add Item.</div>
+    {{/if}}
+
+    {{else}}
+    <div class="db-items-empty" style="margin-top:2rem;">Create a table using the + button on the left.</div>
+    {{/if}}
+  </div>
+
+</div>

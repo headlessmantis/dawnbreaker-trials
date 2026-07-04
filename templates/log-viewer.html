@@ -1,0 +1,57 @@
+{{!-- Dawnbreaker Trials — Inventory Log Viewer --}}
+<div class="db-log-wrap">
+
+  <div class="db-log-topbar">
+    <span class="db-log-title">▶ INVENTORY LOG</span>
+  </div>
+
+  <div class="db-log-filters">
+    <input type="text" class="db-log-filter-input" placeholder="CHARACTER NAME" data-filter="actor" value="{{filters.actor}}"/>
+    <input type="text" class="db-log-filter-input" placeholder="ITEM NAME" data-filter="item" value="{{filters.item}}"/>
+    <select class="db-log-filter-select" data-filter="rarity">
+      <option value="">ALL RARITIES</option>
+      {{#each rarities}}
+      <option value="{{this}}">{{this}}</option>
+      {{/each}}
+    </select>
+    <select class="db-log-filter-select" data-filter="action">
+      <option value="">ALL ACTIONS</option>
+      {{#each actions}}
+      <option value="{{this}}">{{this}}</option>
+      {{/each}}
+    </select>
+    <button type="button" class="db-log-clear-btn" style="width:auto!important">CLEAR</button>
+  </div>
+
+  <div class="db-log-table-wrap">
+    {{#if isEmpty}}
+    <div class="db-log-empty">NO LOG ENTRIES MATCH FILTERS</div>
+    {{else}}
+    <table class="db-log-table">
+      <thead>
+        <tr>
+          <th>DATE</th>
+          <th>CHARACTER</th>
+          <th>ACTION</th>
+          <th>ITEM</th>
+          <th>RARITY</th>
+          <th>DETAIL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each log}}
+        <tr>
+          <td style="color:var(--db-dim)">{{date}}</td>
+          <td>{{actorName}}</td>
+          <td style="color:var(--db-accent)">{{action}}</td>
+          <td>{{itemName}}</td>
+          <td style="color:{{rarityColor}}">{{rarityLabel}}</td>
+          <td style="color:var(--db-dim);font-size:12px">{{detail}}</td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+    {{/if}}
+  </div>
+
+</div>

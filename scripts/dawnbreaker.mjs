@@ -179,8 +179,14 @@ class DawnbreakerCharacterData extends foundry.abstract.TypeDataModel {
       })),
 
       // Combat modifiers
-      precision: new fields.NumberField({ ...req, initial: 0, integer: true }),
-      accuracy:  new fields.NumberField({ ...req, initial: 0, integer: true }),
+      precision: new fields.SchemaField({
+        base:  new fields.NumberField({ ...req, initial: 0, integer: true }),
+        bonus: new fields.NumberField({ ...req, initial: 0, integer: true }),
+      }),
+      accuracy: new fields.SchemaField({
+        base:  new fields.NumberField({ ...req, initial: 0, integer: true }),
+        bonus: new fields.NumberField({ ...req, initial: 0, integer: true }),
+      }),
 
       // Weapon Proficiencies (each level = ATK/DMG +1, lowers glancing blow chance)
       weaponProf: new fields.SchemaField({
@@ -346,68 +352,163 @@ class DawnbreakerCharacterData extends foundry.abstract.TypeDataModel {
 class DawnbreakerActor extends Actor {
 
   prepareData() {
-    // Inject equipped item bonuses into system data before derived data runs
-    if (this.type === "character" && this.system) {
+    super.prepareData();
+
+    // Apply equipped item bonuses to already-derived character stats
+    if (this.type === 'character' && this.system) {
       const eb = { dam:0, str:0, con:0, agi:0, dex:0, int:0, spr:0,
                    for:0, wil:0, cha:0, mv:0,  ap:0,  ass:0, pr:0,
                    brk:0, mr:0,  ar:0,  hp:0,  ki:0 };
       for (const item of this.items) {
         const s = item.system;
-        if (!s?.equipped || !s?.bonuses) continue;
-        for (const key of Object.keys(eb)) eb[key] += (s.bonuses[key] ?? 0);
-      }
-      // Dual Wield bonus — applied to eb before derived data runs
-      const dualWieldProf = this.system.weaponProf?.dualwield ?? 0;
-      if (dualWieldProf > 0) {
-        const mainW = this.items.find(i => i.type === "weapon" && i.system?.equipped && i.system.slot !== "offhand")
-                   ?? this.items.find(i => i.type === "weapon" && i.system?.equipped);
-        const offW  = this.items.find(i => i.type === "weapon" && i.system?.equipped && i.system.slot === "offhand");
-        if (mainW && offW) {
-          const offType = offW.system.weaponType?.toLowerCase() ?? "";
-          const offProficient = (this.system.weaponProf?.[offType] ?? 0) > 0;
-          this.system._dualWieldDam = dualWieldProf;       // stored separately, baked into weapon.dam in getRollData
-          this.system._dualWieldPrecision = offProficient ? dualWieldProf : 0;
-        } else {
-          this.system._dualWieldDam = 0;
-          this.system._dualWieldPrecision = 0;
+        if (!s?.equipped) continue;
+        if (s.bonuses) { for (const key of Object.keys(eb)) eb[key] += (s.bonuses[key] ?? 0); }
+        const upgradeLevel = s.upgradeLevel ?? 0;
+        const docType = item.type ?? '';
+        const subType = s.itemType ?? docType;
+        const isWeaponDoc = docType === 'weapon' || subType === 'weapon';
+        const isOffhandDoc = docType === 'offhand' || subType === 'offhand';
+        const isArmorDoc   = docType === 'armor'   || subType === 'armor';
+        if (isWeaponDoc || isOffhandDoc) {
+          const wPathId = item.getFlag?.('dawnbreaker-trials', 'growthPath') ?? null;
+          eb.dam += wPathId ? 0 : (2 + upgradeLevel);
+          if (wPathId) {
+            const wb = _getPathLevelGrowth(wPathId, upgradeLevel);
+            for (const [k, v] of Object.entries(wb)) eb[k] = (eb[k] ?? 0) + v;
+          }
         }
+        else if (isArmorDoc) {
+          const slot = s.slot ?? '';
+          const fp = s.forgePath ?? '';
+          const pathId = item.getFlag?.('dawnbreaker-trials', 'growthPath') ?? null;
+          const ab = _getArmorUpgradeBonuses(fp, slot, upgradeLevel, pathId);
+          for (const [k, v] of Object.entries(ab)) eb[k] = (eb[k] ?? 0) + v;
+        }
+        const enhancements = item.getFlag('dawnbreaker-trials', 'enhancements') ?? [];
+        for (const enh of enhancements) { if (enh?.stat && eb[enh.stat] !== undefined) eb[enh.stat] += enh.value; }
+        const slot0 = item.getFlag('dawnbreaker-trials', 'slot0') ?? {};
+        if (slot0.stat && eb[slot0.stat] !== undefined) eb[slot0.stat] += slot0.value ?? 0;
       }
       this.system._equippedBonuses = eb;
-
-      // Resolve primary equipped weapon (main hand preferred, falls back to offhand type)
-      const pw = this.items.find(i => i.type === "weapon" && i.system?.equipped && i.system.slot !== "offhand")
-              ?? this.items.find(i => i.type === "weapon" && i.system?.equipped)
-              ?? this.items.find(i => i.type === "offhand" && i.system?.equipped)
-              ?? null;
+      const ss = this.system.stats;
+      const kennel = this.system.kennel ?? 100;
+      const dead   = this.system.deceased ?? false;
+      for (const key of ['STR','CON','AGI','DEX','INT','SPR','FOR','WIL']) {
+        const st = ss?.[key]; if (!st) continue;
+        const ebk = key.toLowerCase();
+        st.equippedBonus = (st.equippedBonus ?? 0) + (eb[ebk] ?? 0);
+        st.total = (st.total ?? 0) + (eb[ebk] ?? 0);
+        st.totalRaw = st.total;
+        st.totalKennel = dead ? 0 : Math.floor(st.total * (kennel / 100));
+      }
+      for (const key of ['ASS','BRK','CHA']) {
+        const st = ss?.[key]; if (!st) continue;
+        st.total = (st.total ?? 0) + (eb[key.toLowerCase()] ?? 0);
+        st.totalKennel = st.total;
+      }
+      if (ss?.PR) { ss.PR.total = (ss.PR.total ?? 0) + (eb.pr ?? 0); ss.PR.totalKennel = dead ? 0 : Math.floor(ss.PR.total * (kennel / 100)); }
+      if (ss?.MR) { ss.MR.total = (ss.MR.total ?? 0) + (eb.mr ?? 0); ss.MR.totalKennel = dead ? 0 : Math.floor(ss.MR.total * (kennel / 100)); }
+      if (ss?.MV) { ss.MV.total = (ss.MV.total ?? 0) + (eb.mv ?? 0); ss.MV.totalKennel = ss.MV.total; }
+      if (ss?.AP) { ss.AP.total = (ss.AP.total ?? 0) + (eb.ap ?? 0); ss.AP.totalKennel = ss.AP.total; }
+      this.system.hp.max = (this.system.hp.max ?? 0) + (eb.hp ?? 0);
+      this.system.ar.max = (this.system.ar.max ?? 0) + (eb.ar ?? 0);
+      this.system.ki.max = (this.system.ki.max ?? 0) + (eb.ki ?? 0);
+      // Dual Wield bonus
+      const dualWieldProf = this.system.weaponProf?.dualwield ?? 0;
+      if (dualWieldProf > 0) {
+        const mainW = this.items.find(i => i.type === 'weapon' && i.system?.equipped && i.system.slot !== 'offhand')
+                   ?? this.items.find(i => i.type === 'weapon' && i.system?.equipped);
+        const offW  = this.items.find(i => i.type === 'weapon' && i.system?.equipped && i.system.slot === 'offhand');
+        if (mainW && offW) {
+          const offType = offW.system.weaponType?.toLowerCase() ?? '';
+          const offProficient = (this.system.weaponProf?.[offType] ?? 0) > 0;
+          this.system._dualWieldDam = dualWieldProf;
+          this.system._dualWieldPrecision = offProficient ? dualWieldProf : 0;
+        } else { this.system._dualWieldDam = 0; this.system._dualWieldPrecision = 0; }
+      }
+      // Equipped weapon references (used by attack macros)
+      const _itemDam = (it) => {
+        const s = it.system; const lvl = s?.upgradeLevel ?? 0;
+        const base = s?.bonuses?.dam ?? 0;
+        const enhDam = (it.getFlag('dawnbreaker-trials','enhancements') ?? []).filter(e => e?.stat === 'dam').reduce((sum,e) => sum + e.value, 0);
+        const pathId = it.getFlag?.('dawnbreaker-trials','growthPath') ?? null;
+        const fixedDam = pathId ? 0 : (2 + lvl);
+        const growthDam = pathId ? (_getPathLevelGrowth(pathId, lvl).dam ?? 0) : 0;
+        return base + fixedDam + growthDam + enhDam;
+      };
+      const pw = this.items.find(i => i.type === 'weapon' && i.system?.equipped && i.system.slot !== 'offhand')
+              ?? this.items.find(i => i.type === 'weapon' && i.system?.equipped)
+              ?? this.items.find(i => i.type === 'offhand' && i.system?.equipped) ?? null;
       this.system._equippedWeapon = pw ? {
-        id:             pw.id,
-        name:           pw.name,
-        weaponType:     pw.system.weaponType ?? "",
-        attackStat:     pw.system.attackStat ?? "STR",
-        reach:          pw.system.reach      ?? 1,
-        dam:            pw.system.bonuses?.dam ?? 0,
-        animationFile:  pw.system.animationFile  ?? "",
-        animationScale: pw.system.animationScale ?? 1.0,
-        animationSound: pw.system.animationSound ?? "",
+        id: pw.id, name: pw.name, weaponType: pw.system.weaponType ?? '',
+        attackStat: pw.system.attackStat ?? 'STR', reach: pw.system.reach ?? 1,
+        dam: _itemDam(pw), animationFile: pw.system.animationFile ?? '',
+        animationScale: pw.system.animationScale ?? 1.0, animationSound: pw.system.animationSound ?? '',
       } : null;
-
-      // Resolve off-hand weapon (dual-wield weapon in offhand slot, or offhand-type item)
-      const ohw = this.items.find(i => i.type === "weapon" && i.system?.equipped && i.system.slot === "offhand")
-               ?? this.items.find(i => i.type === "offhand" && i.system?.equipped)
-               ?? null;
+      const ohw = this.items.find(i => i.type === 'weapon' && i.system?.equipped && i.system.slot === 'offhand')
+               ?? this.items.find(i => i.type === 'offhand' && i.system?.equipped) ?? null;
       this.system._equippedOffHandWeapon = ohw ? {
-        id:             ohw.id,
-        name:           ohw.name,
-        weaponType:     ohw.system.weaponType ?? "",
-        attackStat:     ohw.system.attackStat ?? "STR",
-        reach:          ohw.system.reach      ?? 1,
-        dam:            ohw.system.bonuses?.dam ?? 0,
-        animationFile:  ohw.system.animationFile  ?? "",
-        animationScale: ohw.system.animationScale ?? 1.0,
-        animationSound: ohw.system.animationSound ?? "",
+        id: ohw.id, name: ohw.name, weaponType: ohw.system.weaponType ?? '',
+        attackStat: ohw.system.attackStat ?? 'STR', reach: ohw.system.reach ?? 1,
+        dam: _itemDam(ohw), animationFile: ohw.system.animationFile ?? '',
+        animationScale: ohw.system.animationScale ?? 1.0, animationSound: ohw.system.animationSound ?? '',
       } : null;
     }
-    super.prepareData();
+
+    // Shimmering Scales — apply +5 PR/MR to derived total when Shimmer condition is active
+    if (this.system) {
+      const hasShimmer = (this.system.conditions ?? []).some(c => c.label === "shimmer");
+      if (hasShimmer) {
+        if (this.type === "character") {
+          const pr = this.system.stats?.PR;
+          const mr = this.system.stats?.MR;
+          const kennel = this.system.kennel ?? 100;
+          const dead   = this.system.deceased ?? false;
+          if (pr) {
+            pr.total = (pr.total ?? 0) + 5;
+            pr.totalKennel = dead ? 0 : Math.floor(pr.total * (kennel / 100));
+          }
+          if (mr) {
+            mr.total = (mr.total ?? 0) + 5;
+            mr.totalKennel = dead ? 0 : Math.floor(mr.total * (kennel / 100));
+          }
+        } else if (this.type === "npc") {
+          if (this.system.stats) {
+            this.system.stats._prTotal = (this.system.stats.PR ?? 0) + 5;
+            this.system.stats._mrTotal = (this.system.stats.MR ?? 0) + 5;
+          }
+        }
+      }
+    }
+
+    // AURA condition — allies given this condition by Light Aura get PR/MR bonus
+    // effect field format: "pr_mr:X" where X is the bonus value
+    if (this.system) {
+      const auraCond = (this.system.conditions ?? []).find(c => c.label === "aura" || c.name?.toLowerCase() === "aura");
+      if (auraCond) {
+        const match = String(auraCond.effect ?? "").match(/pr_mr:(\d+)/);
+        const bonus = match ? parseInt(match[1]) : 0;
+        if (bonus > 0) {
+          if (this.type === "character") {
+            const pr = this.system.stats?.PR;
+            const mr = this.system.stats?.MR;
+            const kennel = this.system.kennel ?? 100;
+            const dead   = this.system.deceased ?? false;
+            if (pr) {
+              pr.total = (pr.total ?? 0) + bonus;
+              pr.totalKennel = dead ? 0 : Math.floor(pr.total * (kennel / 100));
+            }
+            if (mr) {
+              mr.total = (mr.total ?? 0) + bonus;
+              mr.totalKennel = dead ? 0 : Math.floor(mr.total * (kennel / 100));
+            }
+          } else if (this.type === "npc" && this.system.stats) {
+            this.system.stats._prTotal = (this.system.stats._prTotal ?? this.system.stats.PR ?? 0) + bonus;
+            this.system.stats._mrTotal = (this.system.stats._mrTotal ?? this.system.stats.MR ?? 0) + bonus;
+          }
+        }
+      }
+    }
 
     // Write derived max values back so external tools (HUD etc.) can read them
     if (this.type === "character" && this.system && this.id) {
@@ -493,7 +594,7 @@ class DawnbreakerActor extends Actor {
     const data = super.getRollData();
     const s = this.system;
 
-    if (this.type !== "character") return data;
+    if (this.type !== "character" && this.type !== "companion") return data;
 
     // ── Flat stat references: @str.mod, @str.total etc ──
     const statKeys = ["STR","CON","AGI","DEX","INT","SPR","FOR","WIL","CHA","MV","AP","ASS","PR","BRK","MR"];
@@ -551,9 +652,15 @@ class DawnbreakerActor extends Actor {
     if (equippedWeapon) {
       const wt          = equippedWeapon.system.weaponType ?? "";
       const atk         = equippedWeapon.system.attackStat ?? "STR";
-      const rawDam      = equippedWeapon.system.bonuses?.dam ?? 0;
+      const lvl         = equippedWeapon.system.upgradeLevel ?? 0;
+      const wPathId     = equippedWeapon.getFlag?.("dawnbreaker-trials","growthPath") ?? null;
+      const fixedDam    = wPathId ? 0 : (2 + lvl);
+      const pathGrowthDam = wPathId ? (_getPathLevelGrowth(wPathId, lvl).dam ?? 0) : 0;
+      const baseDam     = (equippedWeapon.system.bonuses?.dam ?? 0) + fixedDam + pathGrowthDam;
+      const enhDam      = (equippedWeapon.getFlag("dawnbreaker-trials","enhancements") ?? [])
+                            .filter(e => e?.stat === "dam").reduce((sum,e) => sum + e.value, 0);
       const dualWieldDam = s._dualWieldDam ?? 0;
-      const dam         = rawDam + dualWieldDam; // weapon.dam includes dual wield bonus so @weapon.dam in FORMULA picks it up
+      const dam         = baseDam + enhDam + dualWieldDam;
       const profLevel   = s.weaponProf?.[wt] ?? 0;
       data.weapon = {
         name:            equippedWeapon.name,
@@ -565,10 +672,16 @@ class DawnbreakerActor extends Actor {
         atkBonus:        profLevel,
         dmgBonus:        dam + profLevel,
         hpDmgBonus:      profLevel + dualWieldDam,
-        attackStatTotal: data[atk.toLowerCase()]?.total ?? 0,
+        attackStatTotal: data[atk.toLowerCase()]?.totalKennel ?? 0,
       };
     } else {
-      data.weapon = { name:"", type:"", attackStat:"", dam:0, profLevel:0, profBonus:0, atkBonus:0, dmgBonus:0, hpDmgBonus:0, attackStatTotal:0 };
+      // No weapon item equipped (e.g. companions/pets) — auto-attack off whichever core stat is highest
+      let bestStat = "STR", bestTotal = -Infinity;
+      for (const k of ["STR","CON","AGI","DEX","INT","SPR"]) {
+        const t = data[k.toLowerCase()]?.totalKennel ?? 0;
+        if (t > bestTotal) { bestTotal = t; bestStat = k; }
+      }
+      data.weapon = { name:"", type:"", attackStat:bestStat, dam:0, profLevel:0, profBonus:0, atkBonus:0, dmgBonus:0, hpDmgBonus:0, attackStatTotal:bestTotal };
     }
 
     return data;
@@ -581,12 +694,14 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     return foundry.utils.mergeObject(super.defaultOptions, {
       classes: ["dawnbreaker", "sheet", "actor"],
       template: "systems/dawnbreaker-trials/templates/actor-sheet.html",
-      width: 750,
-      height: 950,
+      width: 1200,
+      height: 1000,
+      resizable: false,
       tabs: [{ navSelector: ".tabs", contentSelector: "form", initial: "core" }],
       scrollY: [".sheet-body.active"],
     });
   }
+  get title() { return this.token?.name ?? this.actor.name; }
 
   getData() {
     const context = super.getData();
@@ -594,29 +709,71 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     context.system = actor.system;
     context.theme  = actor.system.theme ?? "default";
 
-    // Pass owned items sorted by type for the equipment tab
-    const allItems = actor.items.contents.map((i, idx) => ({
-      id:        i.id,
-      name:      i.name,
-      img:       i.img,
-      type:      i.type,
-      equipped:  i.system.equipped ?? false,
-      qty:       i.system.qty ?? 1,
-      weaponType: i.system.weaponType ?? "",
-      attackStat: i.system.attackStat ?? "",
-      dam:        i.system.bonuses?.dam ?? 0,
-      effect:     i.system.effect ?? i.system.desc ?? "",
-      armorSlot:  i.system.slot ?? i.system.armorSlot ?? "",
-      isWeapon:   ["weapon","offhand"].includes(i.type),
-      isArmor:    i.type === "armor",
-      isAbility:  i.type === "ability",
-      globalIndex: idx + 1,
-    }));
-    context.ownedItems = allItems;
-    context.weapons    = allItems.filter(i => i.isWeapon);
-    context.armors     = allItems.filter(i => i.isArmor);
+    // Pass owned items sorted by type for the inventory tab
+    const allItems = actor.items.contents.map((i, idx) => {
+      const rarity = i.system?.rarity ?? "basic";
+      const level  = i.system?.upgradeLevel ?? 0;
+      const itype  = i.type ?? i.system?.itemType ?? "";
+      // Build bonus string the same way the paperdoll does
+      const bTotals = {};
+      const b = i.system?.bonuses ?? {};
+      const _isWeapon = itype === "weapon" || itype === "offhand" || i.system?.itemType === "weapon";
+      for (const [k, v] of Object.entries(b)) if (v) bTotals[k] = (bTotals[k] ?? 0) + v;
+      if (_isWeapon) {
+        const wPathId = i.getFlag?.("dawnbreaker-trials", "growthPath") ?? null;
+        if (!wPathId) bTotals.dam = (bTotals.dam ?? 0) + 2 + level;
+        if (wPathId) {
+          const wb = _getPathLevelGrowth(wPathId, level);
+          for (const [k, v] of Object.entries(wb)) bTotals[k] = (bTotals[k] ?? 0) + v;
+        }
+      } else if (itype === "armor" || i.system?.itemType === "armor") {
+        const slot   = i.system?.slot ?? "";
+        const fp     = i.system?.forgePath ?? "";
+        const pathId = i.getFlag?.("dawnbreaker-trials", "growthPath") ?? null;
+        const ab = _getArmorUpgradeBonuses(fp, slot, level, pathId);
+        for (const [k, v] of Object.entries(ab)) bTotals[k] = (bTotals[k] ?? 0) + v;
+      }
+      const slot0f = i.getFlag("dawnbreaker-trials", "slot0") ?? {};
+      // slot0 for weapons represents the base DAM (already in bTotals as 2+level); skip to avoid double-count.
+      // For non-weapon/armor items, slot0 can hold a GM-set bonus stat.
+      if (slot0f.stat && !_isWeapon) bTotals[slot0f.stat] = (bTotals[slot0f.stat] ?? 0) + (slot0f.value ?? 0);
+      for (const enh of (i.getFlag("dawnbreaker-trials", "enhancements") ?? [])) {
+        if (enh?.stat) bTotals[enh.stat] = (bTotals[enh.stat] ?? 0) + enh.value;
+      }
+      const bonusStr = Object.entries(bTotals).filter(([,v]) => v).map(([k,v]) => `${k.toUpperCase()} +${v}`).join("  ");
+      return {
+        id:        i.id,
+        name:      i.name,
+        img:       i.img,
+        type:      i.type,
+        equipped:  i.system.equipped ?? false,
+        qty:       i.system.qty ?? 1,
+        weaponType: i.system.weaponType ?? "",
+        attackStat: i.system.attackStat ?? "",
+        effect:     i.system.effect ?? i.system.desc ?? "",
+        armorSlot:  i.system.slot ?? i.system.armorSlot ?? "",
+        isWeapon:   ["weapon","offhand"].includes(i.type),
+        isArmor:    i.type === "armor",
+        isAbility:  i.type === "ability",
+        stored:     i.getFlag("dawnbreaker-trials", "stored") ?? false,
+        globalIndex: idx + 1,
+        rarity,
+        rarityColor: _rarityColor(rarity),
+        upgradeLevel: level,
+        bonusStr,
+      };
+    });
+    const carriedItems = allItems.filter(i => !i.stored && !i.isAbility);
+    const storedItems  = allItems.filter(i => i.stored && !i.isAbility);
+    context.weapons    = carriedItems.filter(i => i.isWeapon);
+    context.armors     = carriedItems.filter(i => i.isArmor);
     context.abilities  = allItems.filter(i => i.isAbility);
-    context.otherItems = allItems.filter(i => !i.isWeapon && !i.isArmor && !i.isAbility);
+    context.otherItems = carriedItems.filter(i => !i.isWeapon && !i.isArmor);
+    context.storedItems = storedItems;
+    // Renumber globalIndex in display order: weapons → armors → others
+    let displayIdx = 1;
+    for (const item of [...context.weapons, ...context.armors, ...context.otherItems]) item.globalIndex = displayIdx++;
+    context.ownedItems = allItems;
 
     // Build paperdoll from equipped items
     const SLOT_MAP = {
@@ -631,10 +788,34 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
       const key      = SLOT_MAP[rawSlot];
       if (!key) continue;
       const bonusLines = [];
+      // Start with manually-set base bonuses
       const b = item.system.bonuses ?? {};
-      for (const [k, v] of Object.entries(b)) { if (v && v !== 0) bonusLines.push(`${k.toUpperCase()} +${v}`); }
+      const bTotals = {};
+      for (const [k, v] of Object.entries(b)) bTotals[k] = (bTotals[k] ?? 0) + v;
+      // Add slot-0 fixed bonus (weapon DAM scaling or armor slot scaling)
+      const lvl = item.system.upgradeLevel ?? 0;
+      const itype = item.type ?? item.system?.itemType ?? "";
+      if (itype === "weapon" || itype === "offhand" || item.system?.itemType === "weapon" || item.system?.itemType === "offhand") {
+        const wPathId = item.getFlag?.("dawnbreaker-trials", "growthPath") ?? null;
+        if (!wPathId) bTotals.dam = (bTotals.dam ?? 0) + 2 + lvl;
+        if (wPathId) {
+          const wb = _getPathLevelGrowth(wPathId, lvl);
+          for (const [k, v] of Object.entries(wb)) bTotals[k] = (bTotals[k] ?? 0) + v;
+        }
+      } else if (itype === "armor" || item.system?.itemType === "armor") {
+        const slot   = item.system.slot ?? "";
+        const fp     = item.system.forgePath ?? "";
+        const pathId = item.getFlag?.("dawnbreaker-trials", "growthPath") ?? null;
+        const ab = _getArmorUpgradeBonuses(fp, slot, lvl, pathId);
+        for (const [k, v] of Object.entries(ab)) bTotals[k] = (bTotals[k] ?? 0) + v;
+      }
+      // Add enhancement flag bonuses
+      const enhs = item.getFlag("dawnbreaker-trials", "enhancements") ?? [];
+      for (const enh of enhs) { if (enh?.stat) bTotals[enh.stat] = (bTotals[enh.stat] ?? 0) + enh.value; }
+      for (const [k, v] of Object.entries(bTotals)) { if (v && v !== 0) bonusLines.push(`${k.toUpperCase()} +${v}`); }
       if (!paperdoll[key]) {
-        paperdoll[key] = { id: item.id, name: item.name, img: item.img, bonuses: bonusLines.join(" | ") };
+        const pdRarity = item.system?.rarity ?? "basic";
+        paperdoll[key] = { id: item.id, name: item.name, img: item.img, bonuses: bonusLines.join(" | "), rarityColor: _rarityColor(pdRarity), upgradeLevel: lvl };
       }
     }
     context.paperdoll = paperdoll;
@@ -644,15 +825,72 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     const PROF_LABELS = { sword:"Sword", dagger:"Dagger", longspear:"Longspear", greatsword:"Greatsword", mace:"Mace", warhammer:"Warhammer", axe:"Axe", staff:"Staff", tome:"Tome", shield:"Shield", bow:"Bows", gun:"Gun", gauntlet:"Gauntlet", whip:"Whip", wand:"Wand", dualwield:"Dual Wield", unarmed:"Unarmed", other:"Other" };
     context.weaponProfDisplay = Object.entries(s.weaponProf ?? {}).map(([key, level]) => ({ key, label: PROF_LABELS[key] ?? key, level }));
 
-    // Precision / Accuracy totals (base + computed bonuses)
-    context.precisionTotal = (s.precision ?? 0) + (s._dualWieldPrecision ?? 0);
-    context.accuracyTotal  = s.accuracy ?? 0;
+    // Precision / Accuracy totals (base + bonus + dual wield bonuses)
+    context.precisionTotal = (s.precision?.base ?? 0) + (s.precision?.bonus ?? 0) + (s._dualWieldPrecision ?? 0);
+    context.accuracyTotal  = (s.accuracy?.base ?? 0) + (s.accuracy?.bonus ?? 0);
+    // Derived roll thresholds shown on sheet
+    context.critThreshold  = Math.max(1, 20 - context.precisionTotal);
+
+    // Damage preview
+    const w           = this.actor.getRollData().weapon ?? {};
+    const profLevel   = w.profLevel ?? 0;
+
+    // glanceBaseCap includes weapon proficiency since prof reduces glancing blow chance
+    context.glanceBaseCap  = Math.max(0, 6 - context.accuracyTotal - profLevel);
+
+    // HP Attack: attack stat + weapon dam + prof + Ironhide's Fury if active (AR < 50%)
+    const hasIronhide = this.actor.items.some(i => i.type === "ability" && i.name.toLowerCase().includes("ironhide"))
+      || Object.values(s.abilities ?? {}).some(arr => Array.isArray(arr) && arr.some(a => a.name?.toLowerCase().includes("ironhide")));
+    const ironhideAR    = s.ar?.current ?? 0;
+    const ironhideARMax = s.ar?.max ?? ironhideAR;
+    const ironhideBonus = hasIronhide && ironhideARMax > 0 && ironhideAR / ironhideARMax < 0.5 ? 5 : 0;
+    context.hpAttackPreview = (w.attackStatTotal ?? 0) + (w.dam ?? 0) + profLevel + ironhideBonus;
+
+    // AR Attack: BRK total + prof + Battlecraze hits if active
+    const bcData           = this.actor.getFlag("dawnbreaker-trials", "battlecrazeHits");
+    const battlecrazeBonus = bcData?.active ? ((bcData.hits ?? 0) * 2) : 0;
+    context.arAttackPreview = (s.stats?.BRK?.total ?? 0) + profLevel + battlecrazeBonus;
+
+    context.hpPct = s.hp?.max > 0 ? Math.min(100, Math.round((s.hp.current / s.hp.max) * 100)) : 0;
+    context.arPct = s.ar?.max > 0 ? Math.min(100, Math.round((s.ar.current / s.ar.max) * 100)) : 0;
+    context.kiPct = s.ki?.max > 0 ? Math.min(100, Math.round((s.ki.current / s.ki.max) * 100)) : 0;
+
+    // Portrait variants for the HUD
+    const allPortraitVars = game.settings.get("dawnbreaker-trials", "portraitVariants") ?? {};
+    context.portraitVariants = allPortraitVars[actor.id] ?? {};
+
+    // Enrich ability arrays with macro icon images for the abilities tab
+    const _macroImg = (name, macroName) => {
+      const mn = macroName || name;
+      return game.macros?.find(m => m.name === mn)?.img ?? "icons/svg/mystery-man.svg";
+    };
+    const _enrich = (arr) => (arr ?? []).map(e => ({ ...e, macroImg: _macroImg(e.name, e.macroName) }));
+    context.abilitiesEnriched = {
+      mainActives:      _enrich(s.abilities?.mainActives),
+      secondaryActives: _enrich(s.abilities?.secondaryActives),
+      reactions:        _enrich(s.abilities?.reactions),
+      passives:         _enrich(s.abilities?.passives),
+      movement:         _enrich(s.abilities?.movement),
+      tracker:          _enrich(s.abilities?.tracker),
+    };
 
     return context;
   }
 
   get template() {
     return "systems/dawnbreaker-trials/templates/actor-sheet.html";
+  }
+
+  async _render(force, options) {
+    await super._render(force, options);
+    _bumpZIndexAboveOthers(this);
+    if (force) {
+      const partyEl = document.getElementById("dbt-party-root");
+      if (partyEl) {
+        const rect = partyEl.getBoundingClientRect();
+        this.setPosition({ left: rect.right + 6, top: rect.top });
+      }
+    }
   }
 
   activateListeners(html) {
@@ -675,7 +913,18 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     html.find(".item-name-link").click(ev => {
       const id   = ev.currentTarget.closest("[data-item-id]").dataset.itemId;
       const item = this.actor.items.get(id);
-      item?.sheet.render(true);
+      if (!item) return;
+      const sheet = item.sheet;
+      sheet.render(true);
+      // Position to the right of the character sheet after it renders
+      const sheetEl = this.element[0];
+      if (sheetEl) {
+        const rect = sheetEl.getBoundingClientRect();
+        const left = rect.right + 10;
+        const top  = rect.top;
+        sheet._restoreScrollPositions?.();
+        setTimeout(() => sheet.setPosition({ left, top }), 50);
+      }
     });
 
     // Equip toggle
@@ -693,7 +942,7 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
         );
         if (dualWieldProf > 0 && hasMainHand) {
           const choice = await new Promise(resolve => {
-            new (foundry.appv1?.applications?.Dialog ?? Dialog)({
+            const dlg = new (foundry.appv1?.applications?.Dialog ?? Dialog)({
               title: "Dual Wield — Equip Slot",
               content: `<p style="font-family:sans-serif;font-size:13px;padding:6px 0;">Where do you want to equip <b>${item.name}</b>?</p>`,
               buttons: {
@@ -703,7 +952,13 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
               },
               default: "main",
               close: () => resolve(null),
-            }).render(true);
+            });
+            dlg.render(true);
+            const sheetEl = this.element[0];
+            if (sheetEl) {
+              const rect = sheetEl.getBoundingClientRect();
+              setTimeout(() => dlg.setPosition({ left: rect.right + 10, top: rect.top }), 50);
+            }
           });
           if (!choice) { ev.currentTarget.checked = false; return; }
           if (choice === "offhand") {
@@ -738,6 +993,33 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
       this.actor.items.get(id)?.delete();
     });
 
+    // Deposit carried item → storage
+    html.find(".item-store-btn").click(async ev => {
+      const id = ev.currentTarget.closest("[data-item-id]").dataset.itemId;
+      const item = this.actor.items.get(id);
+      if (!item) return;
+      const updates = { "system.equipped": false };
+      // Clear offhand slot override if applicable
+      if (item.system.equipped && item.type === "weapon" && item.system.slot === "offhand")
+        updates["system.slot"] = "";
+      await item.update(updates);
+      await item.setFlag("dawnbreaker-trials", "stored", true);
+    });
+
+    // Withdraw stored item → carried
+    html.find(".item-carry-btn").click(async ev => {
+      const id = ev.currentTarget.closest("[data-item-id]").dataset.itemId;
+      const item = this.actor.items.get(id);
+      if (item) await item.unsetFlag("dawnbreaker-trials", "stored");
+    });
+
+    // Send item to another player
+    html.find(".item-transfer-btn").click(async ev => {
+      const id = ev.currentTarget.closest("[data-item-id]").dataset.itemId;
+      const item = this.actor.items.get(id);
+      if (item) await _openItemTransferDialog(this.actor, item);
+    });
+
     // Stat roll buttons
     html.find(".stat-roll-btn").click(ev => {
       const stat = ev.currentTarget.dataset.stat;
@@ -754,7 +1036,7 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     });
 
     // Roll buttons (ability tables)
-    html.find(".roll-btn").click(ev => {
+    html.find(".roll-btn, .ability-macro-icon").click(ev => {
       const type  = ev.currentTarget.dataset.type;
       const index = parseInt(ev.currentTarget.dataset.index);
       const path  = this._typePath(type);
@@ -762,6 +1044,102 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
       const entry = list[index];
       if (!entry) return;
       _executeMacroOrRoll(entry.macroName ?? entry.name, entry.rollFormula ?? "", this.actor, { name: entry.name });
+    });
+
+    // ── Portrait variant listeners ─────────────────────────
+    const _readConditionRows = () => {
+      const rows = [];
+      html.find(".pv-cond-row").each((_, row) => {
+        const trigger = row.querySelector(".pv-cond-trigger")?.value.trim().toLowerCase();
+        const img     = row.querySelector(".pv-cond-img")?.value.trim();
+        if (trigger || img) rows.push({ trigger: trigger ?? "", img: img ?? "" });
+      });
+      return rows;
+    };
+
+    const _savePortraitVariants = async () => {
+      const all   = game.settings.get("dawnbreaker-trials", "portraitVariants") ?? {};
+      const entry = all[this.actor.id] ?? {};
+      html.find(".portrait-variant-input").each((_, el) => {
+        const key = el.dataset.variant;
+        const val = el.value.trim();
+        if (val) entry[key] = val; else delete entry[key];
+      });
+      const conds = _readConditionRows().filter(r => r.trigger && r.img);
+      if (conds.length) entry.conditions = conds; else delete entry.conditions;
+      all[this.actor.id] = entry;
+      await game.settings.set("dawnbreaker-trials", "portraitVariants", all);
+      CTBDisplay.refresh();
+    };
+
+    const _openFP = (currentVal, onPick) => {
+      const FP = foundry.applications?.apps?.FilePicker?.implementation ?? FilePicker;
+      new FP({ type: "image", current: currentVal ?? "", callback: onPick }).browse();
+    };
+
+    // HP-state inputs: save on change + update thumbnail
+    html.find(".portrait-variant-input").on("change", async (ev) => {
+      const row   = ev.currentTarget.closest(".pv-row");
+      const val   = ev.currentTarget.value.trim();
+      const thumb = row?.querySelector(".pv-thumb");
+      if (thumb) thumb.innerHTML = val ? `<img src="${val}"/>` : "";
+      await _savePortraitVariants();
+    });
+
+    // HP-state browse buttons
+    html.find(".pv-browse:not(.pv-cond-browse)").click(ev => {
+      const variant = ev.currentTarget.dataset.variant;
+      const input   = html.find(`.portrait-variant-input[data-variant="${variant}"]`)[0];
+      _openFP(input?.value, async (path) => {
+        if (input) { input.value = path; input.dispatchEvent(new Event("change")); }
+      });
+    });
+
+    // Condition browse buttons (delegated — rows added dynamically)
+    html[0].addEventListener("click", (ev) => {
+      const btn = ev.target.closest(".pv-cond-browse");
+      if (!btn) return;
+      const row   = btn.closest(".pv-cond-row");
+      const input = row?.querySelector(".pv-cond-img");
+      _openFP(input?.value, async (path) => {
+        if (input) {
+          input.value = path;
+          const thumb = row.querySelector(".pv-thumb");
+          if (thumb) thumb.innerHTML = `<img src="${path}"/>`;
+          await _savePortraitVariants();
+        }
+      });
+    });
+
+    // Condition text inputs: save on change
+    html[0].addEventListener("change", async (ev) => {
+      if (ev.target.closest(".pv-cond-row")) await _savePortraitVariants();
+    });
+
+    // Add condition row
+    html.find(".pv-add-condition").click(() => {
+      const table = html.find("#pv-conditions-table")[0];
+      const idx   = html.find(".pv-cond-row").length;
+      const row   = document.createElement("div");
+      row.className = "pv-row pv-cond-row";
+      row.dataset.index = String(idx);
+      row.innerHTML = `
+        <span class="pv-label"><input type="text" class="pv-cond-trigger" placeholder="condition name"/></span>
+        <span class="pv-path">
+          <input type="text" class="pv-cond-img" placeholder="path/to/image"/>
+          <button type="button" class="pv-browse pv-cond-browse" title="Browse">📁</button>
+        </span>
+        <span class="pv-thumb"></span>
+        <span class="pv-del"><button type="button" class="pv-del-condition" title="Remove">✕</button></span>`;
+      table.appendChild(row);
+    });
+
+    // Delete condition row
+    html[0].addEventListener("click", async (ev) => {
+      const btn = ev.target.closest(".pv-del-condition");
+      if (!btn) return;
+      btn.closest(".pv-cond-row")?.remove();
+      await _savePortraitVariants();
     });
 
     // Add row buttons
@@ -779,11 +1157,18 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
 
     // ── Paperdoll — click equipped item to open sheet ──────
     html.find(".paperdoll-slot.pd-filled").click(async (ev) => {
-      if ($(ev.target).hasClass("pd-unequip")) return;
-      const itemId = ev.currentTarget.dataset.itemId;
+      const slot = ev.target.closest(".paperdoll-slot");
+      const itemId = slot?.dataset?.itemId;
       if (!itemId) return;
       const item = this.actor.items.get(itemId);
-      item?.sheet?.render(true);
+      if (!item) return;
+      const sheet = item.sheet ?? new DawnbreakerItemSheet(item, {});
+      sheet.render(true);
+      const sheetEl = this.element[0];
+      if (sheetEl) {
+        const rect = sheetEl.getBoundingClientRect();
+        setTimeout(() => sheet.setPosition({ left: rect.right + 10, top: rect.top }), 50);
+      }
     });
 
     // ── Paperdoll — right-click to unequip ─────────────────
@@ -808,6 +1193,42 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     const themes = ["default","red","blue","green","orange","pink","yellow","brown"];
     themes.forEach(t => form.removeClass(`theme-${t}`));
     form.addClass(`theme-${theme}`);
+  }
+
+  async _onDrop(event) {
+    const data = TextEditor.getDragEventData(event);
+    if (data.type === "Macro") {
+      if (!this.actor.isOwner) return;
+      const macro = await fromUuid(data.uuid).catch(() => null)
+                 ?? game.macros.get(data.id ?? "");
+      if (!macro) return;
+
+      const el         = event.target.closest("[data-ability-section]");
+      const sectionKey = el?.dataset?.abilitySection ?? "mainActives";
+      const valid      = ["mainActives","secondaryActives","reactions","passives","movement","tracker"];
+      const section    = valid.includes(sectionKey) ? sectionKey : "mainActives";
+
+      const cmd = macro.command ?? "";
+
+      let cost = "";
+      for (const p of [
+        /(?:const|let|var)\s+apCost\s*=\s*(\d+)/,
+        /apCost\s*[=:]\s*(\d+)/,
+        /["']?ap[-_]?cost["']?\s*[=:,]\s*(\d+)/i,
+        /ap_cost\s*[=:]\s*(\d+)/i,
+      ]) {
+        const m = cmd.match(p);
+        if (m) { cost = m[1]; break; }
+      }
+
+      const speed = /CastQueue/.test(cmd) ? "Cast Speed" : "Instant";
+      const path  = this._typePath(section);
+      const cur   = foundry.utils.getProperty(this.actor.system, path) ?? [];
+      await this.actor.update({ [`system.${path}`]: [...cur, { name: macro.name, cost, speed, desc: "", macroName: macro.name }] });
+      ui.notifications.info(`Macro "${macro.name}" added to ${section} as ${speed}${cost ? " (" + cost + " AP)" : ""}.`);
+      return;
+    }
+    return super._onDrop(event);
   }
 
   async _onDropItem(event, data) {
@@ -898,6 +1319,19 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
   }
 }
 
+// ── COMPANION SHEET (pets/summons — trimmed layout, primal theme) ──
+class DawnbreakerCompanionSheet extends DawnbreakerActorSheet {
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      classes: ["dawnbreaker", "sheet", "actor", "companion-sheet"],
+      template: "systems/dawnbreaker-trials/templates/companion-sheet.html",
+    });
+  }
+  get template() {
+    return "systems/dawnbreaker-trials/templates/companion-sheet.html";
+  }
+}
+
 // ── NPC DATA MODEL ───────────────────────────────────────────
 class DawnbreakerNPCData extends foundry.abstract.TypeDataModel {
   static defineSchema() {
@@ -956,6 +1390,9 @@ class DawnbreakerNPCData extends foundry.abstract.TypeDataModel {
       animationFile:  new fields.StringField({ initial: "" }),
       animationScale: new fields.NumberField({ required: false, nullable: true, initial: 1.0 }),
       animationSound: new fields.StringField({ initial: "" }),
+      greetingSound:  new fields.StringField({ initial: "" }),
+      forgeSound:     new fields.StringField({ initial: "" }),
+      enhanceSound:   new fields.StringField({ initial: "" }),
 
       // Named animation slots — keyed by event name (e.g. "burrow", "surface", "shell-shatter")
       animationSlots: new fields.ArrayField(new fields.SchemaField({
@@ -967,6 +1404,10 @@ class DawnbreakerNPCData extends foundry.abstract.TypeDataModel {
 
       ctbAP:          new fields.NumberField({ required: true, nullable: false, initial: 0 }),
       reach:          new fields.NumberField({ required: true, nullable: false, initial: 1, integer: true, min: 1 }),
+
+      shopEnabled:       new fields.BooleanField({ initial: false }),
+      blacksmithEnabled: new fields.BooleanField({ initial: false }),
+      enhancerEnabled:   new fields.BooleanField({ initial: false }),
     };
   }
 }
@@ -983,16 +1424,79 @@ class DawnbreakerNPCSheet extends foundry.appv1.sheets.ActorSheet {
       scrollY: [".sheet-body.active"],
     });
   }
+  get title() { return this.token?.name ?? this.actor.name; }
 
   getData() {
     const context = super.getData();
     context.system = this.actor.system;
+    context.isInteractable = this.actor.system?.shopEnabled ?? this.actor.getFlag("dawnbreaker-trials", "isInteractable") ?? false;
+    context.nonCombatant   = this.actor.getFlag("dawnbreaker-trials", "nonCombatant") ?? false;
+    context.shopInventory  = this.actor.getFlag("dawnbreaker-trials", "shopInventory") ?? { name: this.actor.name, items: [] };
+    context.shopTableId    = this.actor.getFlag("dawnbreaker-trials", "shopTableId") ?? "";
+    const allTables        = _getShopTables();
+    context.shopTables     = allTables.map(t => ({ id: t.id, name: t.name, selected: t.id === context.shopTableId }));
+    context.isGM           = game.user.isGM;
     return context;
   }
 
   activateListeners(html) {
     super.activateListeners(html);
     if (!this.isEditable) return;
+
+    // Non-combatant toggle
+    html.find(".npc-noncombatant-toggle").change(async ev => {
+      await this.actor.setFlag("dawnbreaker-trials", "nonCombatant", ev.currentTarget.checked);
+    });
+
+    // Open shop tables manager
+    html.find(".open-shop-tables-btn").click(() => {
+      new DawnbreakerShopTablesApp().render(true);
+    });
+
+    // Shop table selector
+    html.find(".shop-table-select").change(async ev => {
+      const val = ev.currentTarget.value || null;
+      await this.actor.setFlag("dawnbreaker-trials", "shopTableId", val);
+    });
+
+    // Shop name change
+    html.find(".shop-name-input").change(async ev => {
+      const inv = foundry.utils.deepClone(this.actor.getFlag("dawnbreaker-trials", "shopInventory") ?? { name: "", items: [] });
+      inv.name = ev.currentTarget.value;
+      await this.actor.setFlag("dawnbreaker-trials", "shopInventory", inv);
+    });
+
+    // Add shop item (GM)
+    html.find(".shop-add-item-btn").click(async () => {
+      const inv = foundry.utils.deepClone(this.actor.getFlag("dawnbreaker-trials", "shopInventory") ?? { name: this.actor.name, items: [] });
+      inv.items.push({ id: foundry.utils.randomID(), name: "New Item", img: "icons/svg/item-bag.svg", price: 0, qty: -1, description: "" });
+      await this.actor.setFlag("dawnbreaker-trials", "shopInventory", inv);
+    });
+
+    // Delete shop item (GM)
+    html.find(".shop-del-item-btn").click(async ev => {
+      const id  = ev.currentTarget.dataset.id;
+      const inv = foundry.utils.deepClone(this.actor.getFlag("dawnbreaker-trials", "shopInventory") ?? { name: "", items: [] });
+      inv.items = inv.items.filter(i => i.id !== id);
+      await this.actor.setFlag("dawnbreaker-trials", "shopInventory", inv);
+    });
+
+    // Save shop item edits inline
+    html.find(".shop-item-field").change(async ev => {
+      const id    = ev.currentTarget.closest("[data-shop-item-id]").dataset.shopItemId;
+      const field = ev.currentTarget.dataset.field;
+      let val     = ev.currentTarget.value;
+      if (field === "price" || field === "qty") val = parseInt(val) || 0;
+      const inv   = foundry.utils.deepClone(this.actor.getFlag("dawnbreaker-trials", "shopInventory") ?? { name: "", items: [] });
+      const item  = inv.items.find(i => i.id === id);
+      if (item) { item[field] = val; await this.actor.setFlag("dawnbreaker-trials", "shopInventory", inv); }
+    });
+
+    // Open shop as GM (preview)
+    html.find(".shop-open-preview-btn").click(() => {
+      const myChar = game.actors.find(a => a.type === "character" && a.isOwner);
+      new DawnbreakerShopApp(this.actor.id, myChar?.id ?? null).render(true);
+    });
 
     html.find(".add-row").click(ev => {
       const type = ev.currentTarget.dataset.type;
@@ -1003,6 +1507,22 @@ class DawnbreakerNPCSheet extends foundry.appv1.sheets.ActorSheet {
       const type  = ev.currentTarget.dataset.type;
       const index = parseInt(ev.currentTarget.dataset.index);
       this._deleteRow(type, index);
+    });
+
+    // HP / AR Attack buttons — select this actor's token then run the macro
+    html.find(".npc-hp-attack-btn, .npc-ar-attack-btn").click(async ev => {
+      const isHP  = ev.currentTarget.classList.contains("npc-hp-attack-btn");
+      const name  = isHP ? "HP Attack" : "AR Attack";
+      // Find and select this actor's token on the canvas
+      const token = canvas.tokens.placeables.find(t => t.actor?.id === this.actor.id);
+      if (!token) { ui.notifications.warn(`No token for ${this.actor.name} found on the scene.`); return; }
+      canvas.tokens.releaseAll();
+      token.control({ releaseOthers: true });
+      // Small delay so control registers before macro reads controlled tokens
+      await new Promise(r => setTimeout(r, 80));
+      const macro = game.macros.getName(name);
+      if (macro) macro.execute();
+      else ui.notifications.error(`Macro "${name}" not found.`);
     });
   }
 
@@ -1032,7 +1552,926 @@ class DawnbreakerNPCSheet extends foundry.appv1.sheets.ActorSheet {
     const current = foundry.utils.getProperty(this.actor.system, path) ?? [];
     await this.actor.update({ [`system.${path}`]: current.filter((_, i) => i !== index) });
   }
+
+  async _onDrop(event) {
+    // If this NPC has a shop, intercept item drops and add them to shop inventory
+    if (this.actor.getFlag("dawnbreaker-trials", "isInteractable") && game.user.isGM) {
+      let dragData;
+      try { dragData = JSON.parse(event.dataTransfer.getData("text/plain")); } catch { return super._onDrop(event); }
+      if (dragData?.type !== "Item") return super._onDrop(event);
+
+      const item = await fromUuid(dragData.uuid).catch(() => null);
+      if (!item) return super._onDrop(event);
+
+      const inv = foundry.utils.deepClone(
+        this.actor.getFlag("dawnbreaker-trials", "shopInventory") ?? { name: this.actor.name, items: [] }
+      );
+      // Avoid exact duplicates (same uuid already in list)
+      if (dragData.uuid && inv.items.some(i => i.uuid === dragData.uuid)) {
+        ui.notifications.warn(`${item.name} is already in this shop.`);
+        return;
+      }
+      inv.items.push({
+        id:          foundry.utils.randomID(),
+        uuid:        dragData.uuid ?? null,
+        name:        item.name,
+        img:         item.img ?? "icons/svg/item-bag.svg",
+        price:       item.system?.price ?? item.system?.cost ?? 0,
+        qty:         -1,
+        description: item.system?.description?.value?.replace(/<[^>]+>/g, "") ?? item.system?.desc ?? "",
+      });
+      await this.actor.setFlag("dawnbreaker-trials", "shopInventory", inv);
+      return;
+    }
+    return super._onDrop(event);
+  }
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  SHOP SYSTEM
+// ═══════════════════════════════════════════════════════════════
+
+const _shoppingDrawings = new Map();
+
+// ── Journal-backed shop table storage ──────────────────────────
+function _getShopTables() {
+  const journal = game.journal?.getName("DBT Shop Tables");
+  return journal?.getFlag("dawnbreaker-trials", "shopTables") ?? [];
+}
+
+async function _setShopTables(tables) {
+  let journal = game.journal?.getName("DBT Shop Tables");
+  if (!journal) {
+    const created = await JournalEntry.createDocuments([{ name: "DBT Shop Tables", ownership: { default: 2 } }]);
+    journal = created[0];
+  }
+  // Ensure players always have observer access to read shop data
+  if (journal.ownership?.default !== 2) {
+    await journal.update({ ownership: { ...journal.ownership, default: 2 } });
+  }
+  await journal.setFlag("dawnbreaker-trials", "shopTables", tables);
+  game.socket.emit("system.dawnbreaker-trials", { type: "shopTablesUpdate" });
+}
+
+// Resolve shop items for an NPC — checks named table first, falls back to per-NPC flag
+function _resolveShopData(npc) {
+  const tableId = npc.getFlag("dawnbreaker-trials", "shopTableId");
+  if (tableId) {
+    const table = _getShopTables().find(t => t.id === tableId);
+    if (table) return { name: table.name, items: foundry.utils.deepClone(table.items ?? []) };
+  }
+  return foundry.utils.deepClone(npc.getFlag("dawnbreaker-trials", "shopInventory") ?? { name: npc.name, items: [] });
+}
+
+// Persist updated shop items back to the right place (table or per-NPC flag)
+async function _saveShopItems(npc, items) {
+  const tableId = npc.getFlag("dawnbreaker-trials", "shopTableId");
+  if (tableId) {
+    const tables = _getShopTables();
+    const t = tables.find(t => t.id === tableId);
+    if (t) { t.items = items; await _setShopTables(tables); }
+  } else {
+    const inv = foundry.utils.deepClone(npc.getFlag("dawnbreaker-trials", "shopInventory") ?? { name: npc.name, items: [] });
+    inv.items = items;
+    await npc.setFlag("dawnbreaker-trials", "shopInventory", inv);
+    game.socket.emit("system.dawnbreaker-trials", { type: "shopStockUpdate", npcActorId: npc.id });
+  }
+}
+
+async function _processShopPurchase({ npcActorId, buyerActorId, itemId, silent = false }) {
+  const npc   = game.actors.get(npcActorId);
+  const buyer = game.actors.get(buyerActorId);
+  if (!npc || !buyer) return;
+
+  const shop = _resolveShopData(npc);
+  const item = shop.items.find(i => i.id === itemId);
+  if (!item) return;
+
+  const credits = buyer.system.bio.credits ?? 0;
+  if (credits < item.price) {
+    game.socket.emit("system.dawnbreaker-trials", { type: "shopPurchaseFailed", buyerActorId, reason: "insufficient_credits" });
+    return;
+  }
+  if (item.qty === 0) {
+    game.socket.emit("system.dawnbreaker-trials", { type: "shopPurchaseFailed", buyerActorId, reason: "out_of_stock" });
+    return;
+  }
+
+  if (item.qty > 0) item.qty--;
+  await buyer.update({ "system.bio.credits": credits - item.price });
+  await _saveShopItems(npc, shop.items);
+
+  if (item.uuid) {
+    const src = await fromUuid(item.uuid).catch(() => null);
+    if (src) {
+      const stackLimit = src.system?.stackLimit ?? 0;
+      // Find an existing stack (stackLimit 0 = unlimited, so any existing stack is valid)
+      const existing = buyer.items.find(i =>
+        i.getFlag("dawnbreaker-trials", "sourceUuid") === item.uuid &&
+        (stackLimit === 0 || (i.system.qty ?? 0) < stackLimit)
+      );
+      if (existing) {
+        const newQty = (existing.system.qty ?? 1) + 1;
+        await existing.update({ "system.qty": stackLimit > 0 ? Math.min(stackLimit, newQty) : newQty });
+      } else {
+        const newItem = await Item.create({ ...src.toObject(), ownership: {} }, { parent: buyer });
+        await newItem.setFlag("dawnbreaker-trials", "sourceUuid", item.uuid);
+      }
+    }
+  } else {
+    await Item.create({
+      name: item.name, type: "equipment", img: item.img ?? "icons/svg/item-bag.svg",
+      system: { qty: 1, note: item.description ?? "" },
+    }, { parent: buyer });
+  }
+
+  if (!silent) await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #81c784;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🛒 <b>${buyer.name}</b> purchased <b>${item.name}</b> for <span style="color:#c8a84b;font-weight:700;">${item.price} Credits</span>.</div>` });
+}
+
+async function _processShopSell({ buyerActorId, itemId }) {
+  const buyer = game.actors.get(buyerActorId);
+  if (!buyer) return;
+  const item = buyer.items.get(itemId);
+  if (!item) return;
+  const sellPrice = Math.floor((item.system?.cost ?? 0) / 2);
+  const qty = item.system?.qty ?? 1;
+  if (qty > 1) await item.update({ "system.qty": qty - 1 });
+  else await item.delete();
+  const credits = buyer.system.bio.credits ?? 0;
+  await buyer.update({ "system.bio.credits": credits + sellPrice });
+}
+
+// ── Player-facing Shop Window ──────────────────────────────────
+class DawnbreakerShopApp extends foundry.appv1.api.Application {
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: "dawnbreaker-shop",
+      title: "Shop",
+      template: "systems/dawnbreaker-trials/templates/shop.html",
+      width: window.innerWidth,
+      height: window.innerHeight,
+      resizable: false,
+      classes: ["dawnbreaker", "db-shop-app"],
+    });
+  }
+
+  constructor(npcActorId, buyerActorId, options = {}, buyerTokenId = null) {
+    super(options);
+    this.npcActorId        = npcActorId;
+    this.buyerActorId      = buyerActorId;
+    this._buyerTokenId     = buyerTokenId;
+    this._mode             = "buy"; // "buy" | "sell" | "forge" | "enhance"
+    this._smithSelectedId  = null;
+    this._enhSelectedId    = null;
+    this._enhSelectedSlot  = null;
+    this._enhSelectedEssence = null;
+    this._enhSelectedEssenceQty = 1;
+    this._enhLastResult    = null;
+    this._enhPendingConfirm = null;
+    this._selectedCategory = null;
+    this._selectedItemId   = null;
+    this._cart             = [];
+    this._sellCart         = [];
+  }
+
+  get title() {
+    const npc = game.actors.get(this.npcActorId);
+    return npc?.name ?? "Shop";
+  }
+
+  async _render(force, options) {
+    await super._render(force, options);
+    this.setPosition({ left: 0, top: 0, width: window.innerWidth, height: window.innerHeight });
+    const el = this.element?.[0];
+    if (el) {
+      el.style.zIndex = "9999";
+      el.style.borderRadius = "0";
+    }
+  }
+
+  _catAbbrev(cat) { return (cat ?? "GN").slice(0, 2).toUpperCase(); }
+
+  getData() {
+    const npc     = game.actors.get(this.npcActorId);
+    const buyer   = this.buyerActorId ? game.actors.get(this.buyerActorId) : null;
+    const shop    = _resolveShopData(npc);
+    const credits = buyer?.system?.bio?.credits ?? 0;
+
+    const npcCaps = {
+      hasShop:       npc?.system?.shopEnabled       ?? true,
+      hasBlacksmith: npc?.system?.blacksmithEnabled ?? false,
+      hasEnhancer:   npc?.system?.enhancerEnabled   ?? false,
+    };
+    if (this._mode === "buy"     && !npcCaps.hasShop)       this._mode = npcCaps.hasBlacksmith ? "forge" : npcCaps.hasEnhancer ? "enhance" : "buy";
+    if (this._mode === "sell"    && !npcCaps.hasShop)       this._mode = npcCaps.hasBlacksmith ? "forge" : npcCaps.hasEnhancer ? "enhance" : "buy";
+    if (this._mode === "forge"   && !npcCaps.hasBlacksmith) this._mode = npcCaps.hasShop ? "buy" : npcCaps.hasEnhancer ? "enhance" : "buy";
+    if (this._mode === "enhance" && !npcCaps.hasEnhancer)   this._mode = npcCaps.hasShop ? "buy" : npcCaps.hasBlacksmith ? "forge" : "buy";
+
+    // ── FORGE MODE ──
+    if (this._mode === "forge" && buyer) {
+      const items = buyer.items.filter(i =>
+        ["weapon","armor","offhand"].includes(i.system?.itemType ?? "") || ["weapon","armor"].includes(i.type)
+      );
+      const upgradeableItems = items.map(item => {
+        const level = item.system?.upgradeLevel ?? 0;
+        const rarity = item.system?.rarity ?? "basic";
+        return { id:item.id, name:item.name, img:item.img, level, rarity, rarityLabel:_rarityLabel(rarity), rarityColor:_rarityColor(rarity), isSelected:item.id===this._smithSelectedId, atMax:level>=7 };
+      });
+      let selectedItem=null, costRows=[], canAfford=false, slotRows=[];
+      if (this._smithSelectedId) {
+        const item = buyer.items.get(this._smithSelectedId);
+        if (item) {
+          const level=item.system?.upgradeLevel??0, rarity=item.system?.rarity??_rarityFromLevel(level), nextLevel=level+1;
+          const cost=_getUpgradeCost(item,nextLevel), mat=_getPrimaryMaterial(item), mat2=_getSecondaryMaterial(item);
+          const _qty=(name)=>_craftingQty(buyer,name);
+          if (cost&&level<7) {
+            const split=mat2?_splitCost(cost.primary):null;
+            const hO=_qty(mat),hO2=mat2?_qty(mat2):0,hC=_qty("Carmine Shard"),hR=_qty("Rune");
+            const mainNeed=split?split.main:cost.primary, secNeed=split?split.secondary:0;
+            costRows=[
+              {label:mat,need:mainNeed,have:hO,canAfford:hO>=mainNeed},
+              ...(mat2?[{label:mat2,need:secNeed,have:hO2,canAfford:hO2>=secNeed}]:[]),
+              {label:"Carmine Shard",need:cost.carmine,have:hC,canAfford:hC>=cost.carmine,skip:cost.carmine===0},
+              {label:"Rune",need:cost.rune,have:hR,canAfford:hR>=cost.rune,skip:cost.rune===0}
+            ].filter(r=>!r.skip);
+            canAfford=costRows.every(r=>r.canAfford);
+          }
+          const enhancements=item.getFlag("dawnbreaker-trials","enhancements")??[], totalSlots=1+level, isWeapon=item.system?.isWeapon??(item.system?.itemType==="weapon");
+          slotRows=[{slotIndex:0,isFixed:true,label:isWeapon?`DAM +${2+level}`:"FIXED",badge:"FIXED",type:"fixed"}];
+          for(let s=1;s<totalSlots;s++){const enh=enhancements[s-1];slotRows.push(enh?{slotIndex:s,isFixed:false,isFilled:true,label:`${enh.label??enh.stat?.toUpperCase()} +${enh.value}`,badge:enh.essence?enh.essence.toUpperCase():(isWeapon?"EPHI":"AMYNTI"),type:enh.essence?"elemental":"filled"}:{slotIndex:s,isFixed:false,isFilled:false,isEmpty:true,label:"EMPTY",badge:"",type:"empty"});}
+          selectedItem={id:item.id,name:item.name,img:item.img,level,nextLevel,rarity,rarityLabel:_rarityLabel(rarity),rarityColor:_rarityColor(rarity),atMax:level>=7,nextRarity:level<7?_rarityLabel(_rarityFromLevel(nextLevel)):null,crossesRarityBoundary:level<7&&_rarityFromLevel(nextLevel)!==rarity};
+        }
+      }
+      const credits = buyer?.system?.bio?.credits ?? 0;
+      return { mode:"forge", shopName:shop.name, npcName:npc?.name??"", npcImg:npc?.img??"", buyerName:buyer?.name??"", buyerImg:buyer?.img??"", canBuy:!!this.buyerActorId, npcCaps, upgradeableItems, selectedItem, costRows, canAfford, slotRows, credits, canAffordCredits: credits >= 200 };
+    }
+
+    // ── ENHANCE MODE ──
+    if (this._mode === "enhance" && buyer) {
+      const enhanceable = buyer.items.filter(i=>["weapon","armor","offhand"].includes(i.system?.itemType??"")||["weapon","armor"].includes(i.type));
+      const _qty=(name)=>_craftingQty(buyer,name);
+      const itemList=enhanceable.map(item=>{const level=item.system?.upgradeLevel??0,enhs=item.getFlag("dawnbreaker-trials","enhancements")??[];return{id:item.id,name:item.name,img:item.img,level,rarity:item.system?.rarity??"basic",rarityLabel:_rarityLabel(item.system?.rarity??"basic"),rarityColor:_rarityColor(item.system?.rarity??"basic"),isSelected:item.id===this._enhSelectedId,slotsLabel:`${enhs.length}/${level} SLOTS`};});
+      let selectedItem=null,slotRows=[],canApply=false,rerollCost=0;
+      const essenceOptions=[{value:"",label:"None (standard roll)"},{value:"fire",label:`Fire Essence (${_qty("Fire Essence")} owned)`},{value:"water",label:`Water Essence (${_qty("Water Essence")} owned)`},{value:"earth",label:`Earth Essence (${_qty("Earth Essence")} owned)`},{value:"air",label:`Air Essence (${_qty("Air Essence")} owned)`},{value:"spirit",label:`Spirit Essence (${_qty("Spirit Essence")} owned)`}];
+      if (this._enhSelectedId) {
+        const item=buyer.items.get(this._enhSelectedId);
+        if (item) {
+          const level=item.system?.upgradeLevel??0,rarity=item.system?.rarity??"basic",enhancements=item.getFlag("dawnbreaker-trials","enhancements")??[],totalSlots=1+level,isWeapon=item.system?.isWeapon??(item.system?.itemType==="weapon");
+          const isGM=game.user.isGM;
+          slotRows=[{slotIndex:0,isFixed:true,label:isWeapon?`DAM +${2+level}`:"FIXED",badge:"FIXED",type:"fixed"}];
+          for(let s=1;s<totalSlots;s++){const enh=enhancements[s-1],rerolls=enh?.rerollCount??0,rc=_getRerollCost(rarity,rerolls),gmLocked=!!(enh?.gmFixed);slotRows.push(enh?{slotIndex:s,isFixed:false,isFilled:true,isGMFixed:gmLocked,label:`${enh.label??enh.stat?.toUpperCase()} +${enh.value}`,badge:gmLocked?"🔒 GM":(enh.essence?enh.essence.toUpperCase():(isWeapon?"EPHI":"AMYNTI")),type:gmLocked?"gmfixed":(enh.essence?"elemental":"filled"),canReroll:!gmLocked||isGM,rerollCost:rc,rerollCount:rerolls,isSelected:this._enhSelectedSlot===s,isGM}:{slotIndex:s,isFixed:false,isFilled:false,isEmpty:true,label:"EMPTY",badge:"",type:"empty",isSelected:this._enhSelectedSlot===s,isGM});}
+          if(this._enhSelectedSlot!==null){const sel=slotRows.find(r=>r.slotIndex===this._enhSelectedSlot);if(sel?.isFilled){rerollCost=sel.rerollCost;canApply=(isGM||!sel.isGMFixed)&&_qty("Carmine Shard")>=rerollCost;}else if(sel?.isEmpty){canApply=isWeapon?_qty("Ephi Shard")>0:_qty("Amynti Shard")>0;}}
+          selectedItem={id:item.id,name:item.name,img:item.img,level,rarity,rarityLabel:_rarityLabel(rarity),rarityColor:_rarityColor(rarity),isWeapon,isGM};
+        }
+      }
+      const essenceQtyOwned = this._enhSelectedEssence ? _qty(`${this._enhSelectedEssence.charAt(0).toUpperCase()}${this._enhSelectedEssence.slice(1)} Essence`) : 0;
+      const selectedEssenceQty = this._enhSelectedEssence ? Math.max(1, Math.min(this._enhSelectedEssenceQty ?? 1, essenceQtyOwned || 1)) : 0;
+      if (this._enhSelectedEssence && (selectedEssenceQty < 1 || selectedEssenceQty > essenceQtyOwned)) canApply = false;
+      const credits = buyer?.system?.bio?.credits ?? 0;
+      return { mode:"enhance", shopName:shop.name, npcName:npc?.name??"", npcImg:npc?.img??"", buyerName:buyer?.name??"", buyerImg:buyer?.img??"", canBuy:!!this.buyerActorId, npcCaps, itemList, selectedItem, slotRows, essenceOptions, canApply, rerollCost, selectedSlot:this._enhSelectedSlot, selectedEssence:this._enhSelectedEssence, selectedEssenceQty, essenceQtyOwned, essenceBiasPct: selectedEssenceQty * ENHANCE_ESSENCE_BOOST_PCT * 100, lastResult:this._enhLastResult, pendingConfirm:this._enhPendingConfirm ?? null, credits, canAffordCredits: credits >= 200 };
+    }
+
+
+    if (this._mode === "sell") {
+      const sellItems = (buyer?.items ?? [])
+        .filter(i => (i.system?.cost ?? 0) > 0)
+        .map(i => ({
+          id: i.id, label: i.name, img: i.img,
+          cost: i.system.cost,
+          sellPrice: Math.floor((i.system.cost ?? 0) / 2),
+          qty: i.system?.qty ?? 1,
+          isSelected: i.id === this._selectedItemId,
+        }));
+      const selSell   = sellItems.find(i => i.isSelected) ?? null;
+      const sellTotal = this._sellCart.reduce((s, e) => s + e.sellPrice * e.qty, 0);
+      return {
+        mode: "sell", shopName: shop.name, npcName: npc?.name ?? "Shop", npcImg: npc?.img ?? "", buyerName: buyer?.name ?? "", buyerImg: buyer?.img ?? "", credits, npcCaps,
+        canBuy: !!this.buyerActorId,
+        sellItems, selSell,
+        sellCart: this._sellCart, sellTotal,
+      };
+    }
+
+    // Buy mode — group items by category
+    const raw = shop.items ?? [];
+    const categories = [...new Set(raw.map(i => i.category || "General"))];
+    if (!this._selectedCategory || !categories.includes(this._selectedCategory))
+      this._selectedCategory = categories[0] ?? "General";
+    const filtered = raw.filter(i => (i.category || "General") === this._selectedCategory);
+    const selId    = this._selectedItemId ?? filtered[0]?.id ?? null;
+    const items    = filtered.map(i => ({
+      ...i,
+      canAfford:  credits >= i.price,
+      inStock:    i.qty !== 0,
+      isSelected: i.id === selId,
+    }));
+    const selected  = items.find(i => i.isSelected) ?? null;
+    const cartTotal = this._cart.reduce((sum, e) => sum + e.price * e.qty, 0);
+    return {
+      mode: "buy", shopName: shop.name, npcName: npc?.name ?? "Shop", npcImg: npc?.img ?? "", buyerName: buyer?.name ?? "", buyerImg: buyer?.img ?? "", credits, npcCaps,
+      canBuy: !!this.buyerActorId,
+      categories: categories.map(c => ({ name: c, abbrev: this._catAbbrev(c), active: c === this._selectedCategory })),
+      items, selected,
+      cart: this._cart, cartTotal, canAffordCart: credits >= cartTotal,
+    };
+  }
+
+  // ── Buy cart ──
+  _cartEntry(itemId) { return this._cart.find(e => e.itemId === itemId); }
+
+  _addToCart(itemId) {
+    const npc  = game.actors.get(this.npcActorId);
+    const shop = _resolveShopData(npc);
+    const item = (shop.items ?? []).find(i => i.id === itemId);
+    if (!item) return;
+    const entry = this._cartEntry(itemId);
+    if (entry) {
+      if (item.qty === -1 || entry.qty < item.qty) entry.qty++;
+    } else {
+      this._cart.push({ itemId, label: item.name, img: item.img, price: item.price, qty: 1, stock: item.qty });
+    }
+    this.render(false);
+  }
+
+  _removeFromCart(itemId) { this._cart = this._cart.filter(e => e.itemId !== itemId); this.render(false); }
+
+  _setCartQty(itemId, qty) {
+    const entry = this._cartEntry(itemId);
+    if (!entry) return;
+    const npc  = game.actors.get(this.npcActorId);
+    const shop = _resolveShopData(npc);
+    const item = (shop.items ?? []).find(i => i.id === itemId);
+    const max  = item?.qty === -1 ? Infinity : (item?.qty ?? 1);
+    entry.qty  = Math.max(1, Math.min(qty, max));
+    this.render(false);
+  }
+
+  async _checkout() {
+    if (!this.buyerActorId || !this._cart.length) return;
+    const cart = [...this._cart];
+    for (const entry of cart) {
+      for (let i = 0; i < entry.qty; i++) {
+        const data = { type: "shopBuy", npcActorId: this.npcActorId, buyerActorId: this.buyerActorId, itemId: entry.itemId, silent: true };
+        if (game.user.isGM) await _processShopPurchase(data);
+        else game.socket.emit("system.dawnbreaker-trials", data);
+      }
+    }
+    const buyer = game.actors.get(this.buyerActorId);
+    const total = cart.reduce((s, e) => s + e.price * e.qty, 0);
+    const lines = cart.map(e => `<li>${e.qty > 1 ? `${e.qty}× ` : ""}${e.label}</li>`).join("");
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #81c784;border-radius:4px;padding:8px 12px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🛒 <b>${buyer?.name ?? "Someone"}</b> purchased:<ul style="margin:4px 0 6px 16px;padding:0;">${lines}</ul><span style="color:#c8a84b;font-weight:700;">Total: ${total} Credits</span></div>` });
+    this._cart = [];
+    this.render(false);
+  }
+
+  // ── Sell cart ──
+  _sellEntry(itemId) { return this._sellCart.find(e => e.itemId === itemId); }
+
+  _addToSellCart(itemId) {
+    const buyer = game.actors.get(this.buyerActorId);
+    const item  = buyer?.items.get(itemId);
+    if (!item) return;
+    const sellPrice = Math.floor((item.system?.cost ?? 0) / 2);
+    const maxQty    = item.system?.qty ?? 1;
+    const entry     = this._sellEntry(itemId);
+    if (entry) { if (entry.qty < maxQty) entry.qty++; }
+    else this._sellCart.push({ itemId, label: item.name, img: item.img, sellPrice, qty: 1, maxQty });
+    this.render(false);
+  }
+
+  _removeFromSellCart(itemId) { this._sellCart = this._sellCart.filter(e => e.itemId !== itemId); this.render(false); }
+
+  _setSellCartQty(itemId, qty) {
+    const entry = this._sellEntry(itemId);
+    if (!entry) return;
+    entry.qty = Math.max(1, Math.min(qty, entry.maxQty));
+    this.render(false);
+  }
+
+  async _sellCheckout() {
+    if (!this.buyerActorId || !this._sellCart.length) return;
+    const cart = [...this._sellCart];
+    for (const entry of cart) {
+      for (let i = 0; i < entry.qty; i++) {
+        const data = { type: "shopSell", buyerActorId: this.buyerActorId, itemId: entry.itemId };
+        if (game.user.isGM) await _processShopSell(data);
+        else game.socket.emit("system.dawnbreaker-trials", data);
+      }
+    }
+    const buyer = game.actors.get(this.buyerActorId);
+    const total = cart.reduce((s, e) => s + e.sellPrice * e.qty, 0);
+    const lines = cart.map(e => `<li>${e.qty > 1 ? `${e.qty}× ` : ""}${e.label} (+${e.sellPrice * e.qty}¢)</li>`).join("");
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:4px;padding:8px 12px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">💰 <b>${buyer?.name ?? "Someone"}</b> sold:<ul style="margin:4px 0 6px 16px;padding:0;">${lines}</ul><span style="color:#c8a84b;font-weight:700;">Earned: ${total} Credits</span></div>` });
+    this._sellCart = [];
+    this.render(false);
+  }
+
+  activateListeners(html) {
+    super.activateListeners(html);
+
+    // Mode tabs
+    html.find(".db-mode-tab").click(ev => {
+      this._mode             = ev.currentTarget.dataset.mode;
+      this._selectedItemId   = null;
+      this._selectedCategory = null;
+      this.render(false);
+    });
+
+    // ── FORGE tab listeners ──
+    html.find(".db-smith-item-row").click(ev => { this._smithSelectedId = ev.currentTarget.dataset.itemId; this.render(false); });
+    html.find(".db-smith-forge-btn").click(async () => {
+      const buyer = game.actors.get(this.buyerActorId);
+      const item  = buyer?.items.get(this._smithSelectedId);
+      if (!item) return;
+      const level = item.system?.upgradeLevel ?? 0;
+      if (level >= 7) return;
+      const nextLevel = level + 1, cost = _getUpgradeCost(item, nextLevel), mat = _getPrimaryMaterial(item), mat2 = _getSecondaryMaterial(item);
+      const split = mat2 ? _splitCost(cost.primary) : null;
+      await _consumeStoredMaterial(buyer, mat, split ? split.main : cost.primary);
+      if (mat2 && split.secondary > 0) await _consumeStoredMaterial(buyer, mat2, split.secondary);
+      if (cost.carmine > 0) await _consumeStoredMaterial(buyer, "Carmine Shard", cost.carmine);
+      if (cost.rune > 0)    await _consumeStoredMaterial(buyer, "Rune", cost.rune);
+      await buyer.update({ "system.bio.credits": Math.max(0, (buyer.system.bio.credits ?? 0) - 200) });
+      const forgeSound = game.actors.get(this.npcActorId)?.system?.forgeSound;
+      if (forgeSound) (foundry.audio?.AudioHelper ?? AudioHelper).play({ src: forgeSound, volume: 1, autoplay: true, loop: false }, true);
+      const newRarity = _rarityFromLevel(nextLevel);
+      await item.update({ "system.upgradeLevel": nextLevel, "system.rarity": newRarity });
+      await _applyEnhancements(item);
+      const matDetail = mat2 ? `${split.main}x ${mat} + ${split.secondary}x ${mat2}` : `${cost.primary}x ${mat}`;
+      _craftingLogAdd({ actorName: buyer.name, action: "upgrade", itemName: item.name, rarity: newRarity, detail: `Upgraded to +${nextLevel} (${_rarityLabel(newRarity)}) — consumed ${matDetail}${cost.carmine ? `, ${cost.carmine}x Carmine` : ""}${cost.rune ? `, ${cost.rune}x Rune` : ""}` });
+      ui.notifications.info(`${item.name} upgraded to +${nextLevel}!`);
+      this.render(false);
+    });
+
+    // ── ENHANCE tab listeners ──
+    html.find(".db-enhance-item-row").click(ev => { this._enhSelectedId = ev.currentTarget.dataset.itemId; this._enhSelectedSlot = null; this._enhLastResult = null; this._enhPendingConfirm = null; this.render(false); });
+    html.find(".db-enh-slot-select").click(ev => { this._enhSelectedSlot = parseInt(ev.currentTarget.dataset.slot); this._enhPendingConfirm = null; this.render(false); });
+    html.find(".db-enhance-essence-select").change(ev => { this._enhSelectedEssence = ev.currentTarget.value || null; this._enhSelectedEssenceQty = 1; this._enhPendingConfirm = null; this.render(false); });
+    html.find(".db-enhance-essence-qty").change(ev => { this._enhSelectedEssenceQty = Math.max(1, parseInt(ev.currentTarget.value) || 1); this._enhPendingConfirm = null; this.render(false); });
+    // ── GM: set/edit fixed slot ──
+    if (game.user.isGM) {
+      html.find(".db-enh-gm-fix-btn").click(async ev => {
+        const slotIdx = parseInt(ev.currentTarget.dataset.slot) - 1;
+        const buyer = game.actors.get(this.buyerActorId);
+        const item  = buyer?.items.get(this._enhSelectedId);
+        if (!item) return;
+        const enhancements = foundry.utils.deepClone(item.getFlag("dawnbreaker-trials", "enhancements") ?? []);
+        const existing = enhancements[slotIdx] ?? {};
+        const dlg = await new Promise(resolve => {
+          new (foundry.appv1?.applications?.Dialog ?? Dialog)({
+            title: "GM — Set Fixed Enhancement",
+            content: `
+              <div style="display:grid;gap:6px;padding:8px;">
+                <label>Stat / Label<input class="enh-fix-label" type="text" value="${existing.label ?? existing.stat?.toUpperCase() ?? ""}" style="width:100%;margin-top:2px;"/></label>
+                <label>Value<input class="enh-fix-value" type="number" value="${existing.value ?? 0}" style="width:100%;margin-top:2px;"/></label>
+                <label style="display:flex;align-items:center;gap:6px;"><input class="enh-fix-locked" type="checkbox" ${existing.gmFixed !== false ? "checked" : ""}/>  Lock (prevent player reroll)</label>
+              </div>`,
+            buttons: {
+              ok: { label: "Save", callback: html => resolve({
+                label: html.find(".enh-fix-label").val().trim(),
+                value: parseInt(html.find(".enh-fix-value").val()) || 0,
+                gmFixed: html.find(".enh-fix-locked").prop("checked")
+              })},
+              cancel: { label: "Cancel", callback: () => resolve(null) }
+            },
+            default: "ok"
+          }).render(true);
+        });
+        if (!dlg) return;
+        enhancements[slotIdx] = { ...existing, label: dlg.label, stat: dlg.label.toLowerCase(), value: dlg.value, gmFixed: dlg.gmFixed, rerollCount: existing.rerollCount ?? 0 };
+        await item.setFlag("dawnbreaker-trials", "enhancements", enhancements);
+        await _applyEnhancements(item);
+        _craftingLogAdd({ actorName: "GM", action: "gm-set", itemName: item.name, rarity: item.system?.rarity ?? "basic", detail: `Slot ${slotIdx+1}: ${dlg.label} +${dlg.value}${dlg.gmFixed ? " [LOCKED]" : ""}` });
+        this.render(false);
+      });
+    }
+
+    html.find(".db-enhance-apply-btn").click(() => {
+      const buyer = game.actors.get(this.buyerActorId);
+      const item  = buyer?.items.get(this._enhSelectedId);
+      if (!item || this._enhSelectedSlot === null) return;
+      const rarity = item.system?.rarity ?? "basic";
+      const isWeapon = item.system?.isWeapon ?? (item.system?.itemType === "weapon");
+      const enhancements = item.getFlag("dawnbreaker-trials", "enhancements") ?? [];
+      const slotIdx = this._enhSelectedSlot - 1, existing = enhancements[slotIdx], rerollCount = existing?.rerollCount ?? 0;
+      if (existing?.gmFixed && !game.user.isGM) { ui.notifications.warn("This slot is locked by the GM."); return; }
+      // Build cost summary for inline confirmation panel
+      const shardName = existing ? "Carmine Shard" : (isWeapon ? "Ephi Shard" : "Amynti Shard");
+      const shardCost = existing ? _getRerollCost(rarity, rerollCount) : 1;
+      const essenceQty = this._enhSelectedEssence ? Math.max(1, this._enhSelectedEssenceQty ?? 1) : 0;
+      const essenceName = this._enhSelectedEssence ? `${this._enhSelectedEssence.charAt(0).toUpperCase()}${this._enhSelectedEssence.slice(1)} Essence` : null;
+      const costLines = [`${shardCost}x ${shardName}`];
+      if (essenceName) costLines.push(`${essenceQty}x ${essenceName}`);
+      this._enhPendingConfirm = {
+        isReroll: !!existing,
+        actionLabel: existing ? `Reroll slot ${this._enhSelectedSlot} on ${item.name}?` : `Enhance slot ${this._enhSelectedSlot} on ${item.name}?`,
+        costLabel: costLines.join(" + "),
+      };
+      this.render(false);
+    });
+
+    html.find(".db-enhance-confirm-cancel-btn").click(() => {
+      this._enhPendingConfirm = null;
+      this.render(false);
+    });
+
+    html.find(".db-enhance-confirm-yes-btn").click(async () => {
+      this._enhPendingConfirm = null;
+      const buyer = game.actors.get(this.buyerActorId);
+      const item  = buyer?.items.get(this._enhSelectedId);
+      if (!item || this._enhSelectedSlot === null) { this.render(false); return; }
+      const rarity = item.system?.rarity ?? "basic";
+      const isWeapon = item.system?.isWeapon ?? (item.system?.itemType === "weapon");
+      const enhancements = foundry.utils.deepClone(item.getFlag("dawnbreaker-trials", "enhancements") ?? []);
+      const slotIdx = this._enhSelectedSlot - 1, existing = enhancements[slotIdx], rerollCount = existing?.rerollCount ?? 0;
+      if (existing?.gmFixed && !game.user.isGM) { ui.notifications.warn("This slot is locked by the GM."); this.render(false); return; }
+      const essenceQty = this._enhSelectedEssence ? Math.max(1, this._enhSelectedEssenceQty ?? 1) : 0;
+      if (existing) {
+        await _consumeStoredMaterial(buyer, "Carmine Shard", _getRerollCost(rarity, rerollCount));
+        if (this._enhSelectedEssence) { const en = this._enhSelectedEssence.charAt(0).toUpperCase() + this._enhSelectedEssence.slice(1); await _consumeStoredMaterial(buyer, `${en} Essence`, essenceQty); }
+      } else {
+        await _consumeStoredMaterial(buyer, isWeapon ? "Ephi Shard" : "Amynti Shard", 1);
+        if (this._enhSelectedEssence) { const en = this._enhSelectedEssence.charAt(0).toUpperCase() + this._enhSelectedEssence.slice(1); await _consumeStoredMaterial(buyer, `${en} Essence`, essenceQty); }
+      }
+      await buyer.update({ "system.bio.credits": Math.max(0, (buyer.system.bio.credits ?? 0) - 200) });
+      const enhSound = game.actors.get(this.npcActorId)?.system?.enhanceSound;
+      if (enhSound) (foundry.audio?.AudioHelper ?? AudioHelper).play({ src: enhSound, volume: 1, autoplay: true, loop: false }, true);
+      const result = _rollEnhancement(item, this._enhSelectedEssence, essenceQty);
+      result.rerollCount = existing ? rerollCount + 1 : 0;
+      enhancements[slotIdx] = result;
+      await item.setFlag("dawnbreaker-trials", "enhancements", enhancements);
+      await _applyEnhancements(item);
+      _craftingLogAdd({ actorName: buyer.name, action: existing ? "reroll" : "enhance", itemName: item.name, rarity, detail: `Slot ${this._enhSelectedSlot}: ${result.label} +${result.value}${result.essence ? ` [${result.essence} x${essenceQty}]` : ""}` });
+      this._enhLastResult = result; this._enhSelectedSlot = null; this._enhSelectedEssence = null; this._enhSelectedEssenceQty = 1;
+      this.render(false);
+    });
+
+
+    // Category select (buy mode)
+    html.find(".db-cat-row").click(ev => {
+      this._selectedCategory = ev.currentTarget.dataset.cat;
+      this._selectedItemId   = null;
+      this.render(false);
+    });
+
+    // Item select
+    html.find(".db-shop-item-row").click(ev => {
+      this._selectedItemId = ev.currentTarget.dataset.itemId;
+      this.render(false);
+    });
+
+    // Buy cart
+    html.find(".shop-add-to-cart-btn").click(ev => this._addToCart(ev.currentTarget.dataset.itemId));
+    html.find(".db-cart-remove-btn").click(ev => this._removeFromCart(ev.currentTarget.dataset.itemId));
+    html.find(".db-cart-qty").on("change", ev => this._setCartQty(ev.currentTarget.dataset.itemId, parseInt(ev.currentTarget.value) || 1));
+    html.find(".db-cart-checkout-btn").click(() => this._checkout());
+
+    // Sell cart
+    html.find(".db-sell-item-row").click(ev => {
+      this._selectedItemId = ev.currentTarget.dataset.itemId;
+      this.render(false);
+    });
+    html.find(".shop-add-to-sell-btn").click(ev => this._addToSellCart(ev.currentTarget.dataset.itemId));
+    html.find(".db-sell-cart-remove-btn").click(ev => this._removeFromSellCart(ev.currentTarget.dataset.itemId));
+    html.find(".db-sell-cart-qty").on("change", ev => this._setSellCartQty(ev.currentTarget.dataset.itemId, parseInt(ev.currentTarget.value) || 1));
+    html.find(".db-sell-checkout-btn").click(() => this._sellCheckout());
+  }
+
+  async close(options = {}) {
+    const tokenId = this._buyerTokenId
+      ?? canvas?.tokens?.placeables?.find(t => t.actor?.id === this.buyerActorId)?.document?.id;
+    if (tokenId) {
+      const payload = { type: "shopClose", tokenId };
+      if (game.user.isGM) _handleShopClose(payload);
+      else game.socket.emit("system.dawnbreaker-trials", payload);
+    }
+    return super.close(options);
+  }
+}
+
+// ── GM Shop Tables Manager ─────────────────────────────────────
+class DawnbreakerShopTablesApp extends foundry.appv1.api.Application {
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: "dawnbreaker-shop-tables",
+      title: "Shop Table Manager",
+      template: "systems/dawnbreaker-trials/templates/shop-tables.html",
+      width: 780, height: 580, resizable: true,
+      classes: ["dawnbreaker", "db-shop-tables-app"],
+    });
+  }
+
+  constructor(options = {}) {
+    super(options);
+    this._activeTableId = null;
+  }
+
+  getData() {
+    const tables = _getShopTables();
+    if (!this._activeTableId && tables.length) this._activeTableId = tables[0].id;
+    const activeTable = tables.find(t => t.id === this._activeTableId) ?? null;
+    return {
+      tables: tables.map(t => ({ ...t, active: t.id === this._activeTableId })),
+      activeTable,
+      items: activeTable?.items ?? [],
+    };
+  }
+
+  activateListeners(html) {
+    super.activateListeners(html);
+
+    // Wire up drag-and-drop on the main panel
+    const dropZone = html.find(".db-tables-main")[0];
+    if (dropZone) {
+      dropZone.addEventListener("dragover", ev => { ev.preventDefault(); ev.dataTransfer.dropEffect = "copy"; });
+      dropZone.addEventListener("drop", ev => { ev.preventDefault(); this._onDrop(ev); });
+    }
+
+    html.find(".db-table-list-item").click(ev => {
+      this._activeTableId = ev.currentTarget.dataset.tableId;
+      this.render(false);
+    });
+
+    html.find(".db-table-new-btn").click(async () => {
+      const tables    = _getShopTables();
+      const newTable  = { id: foundry.utils.randomID(), name: "New Table", items: [] };
+      tables.push(newTable);
+      this._activeTableId = newTable.id;
+      await _setShopTables(tables);
+      this.render(false);
+    });
+
+    html.find(".db-table-delete-btn").click(async () => {
+      if (!this._activeTableId) return;
+      const tableName = _getShopTables().find(t => t.id === this._activeTableId)?.name ?? "this table";
+      const confirmed = await Dialog.confirm({ title: "Delete Table", content: `<p>Delete <strong>${tableName}</strong>? This cannot be undone.</p>` });
+      if (!confirmed) return;
+      const tables = _getShopTables().filter(t => t.id !== this._activeTableId);
+      this._activeTableId = tables[0]?.id ?? null;
+      await _setShopTables(tables);
+      this.render(false);
+    });
+
+    const saveTableName = async (val) => {
+      const tables = _getShopTables();
+      const t = tables.find(t => t.id === this._activeTableId);
+      if (t && val.trim()) { t.name = val.trim(); await _setShopTables(tables); this.render(false); }
+    };
+    html.find(".db-table-name-input").change(async ev => saveTableName(ev.currentTarget.value));
+    html.find(".db-table-name-input").keydown(async ev => {
+      if (ev.key === "Enter") { ev.preventDefault(); await saveTableName(ev.currentTarget.value); }
+    });
+
+    html.find(".db-item-add-btn").click(async () => {
+      const tables = _getShopTables();
+      const t = tables.find(t => t.id === this._activeTableId);
+      if (!t) return;
+      t.items = t.items ?? [];
+      t.items.push({ id: foundry.utils.randomID(), name: "New Item", img: "icons/svg/item-bag.svg", price: 0, qty: -1, category: "General", description: "" });
+      await _setShopTables(tables);
+      this.render(false);
+    });
+
+    html.find(".db-item-del-btn").click(async ev => {
+      const itemId = ev.currentTarget.closest("[data-item-id]").dataset.itemId;
+      const tables = _getShopTables();
+      const t = tables.find(t => t.id === this._activeTableId);
+      if (!t) return;
+      t.items = t.items.filter(i => i.id !== itemId);
+      await _setShopTables(tables);
+      this.render(false);
+    });
+
+    html.find(".db-item-field").change(async ev => {
+      const itemId = ev.currentTarget.closest("[data-item-id]").dataset.itemId;
+      const field  = ev.currentTarget.dataset.field;
+      let val      = ev.currentTarget.value;
+      if (field === "price" || field === "qty") val = parseInt(val) || 0;
+      const tables = _getShopTables();
+      const t = tables.find(t => t.id === this._activeTableId);
+      if (!t) return;
+      const item = t.items?.find(i => i.id === itemId);
+      if (item) { item[field] = val; await _setShopTables(tables); }
+    });
+  }
+
+  async _onDrop(event) {
+    if (!this._activeTableId || !game.user.isGM) return;
+    let dragData;
+    try { dragData = JSON.parse(event.dataTransfer.getData("text/plain")); } catch { return; }
+
+    const tables = _getShopTables();
+    const t = tables.find(t => t.id === this._activeTableId);
+    if (!t) return;
+    t.items = t.items ?? [];
+
+    // Collect items to add — either a single Item or all items in a Folder
+    let srcs = [];
+    if (dragData?.type === "Item") {
+      const src = await fromUuid(dragData.uuid).catch(() => null);
+      if (src) srcs = [{ src, uuid: dragData.uuid }];
+    } else if (dragData?.type === "Folder") {
+      const folder = game.folders.get(dragData.id) ?? await fromUuid(dragData.uuid).catch(() => null);
+      if (folder) {
+        // Collect all items recursively in this folder
+        const collectItems = (f) => {
+          const items = (f.contents ?? []).map(item => ({ src: item, uuid: item.uuid }));
+          const sub = (f.children ?? []).flatMap(child => collectItems(child.folder ?? child));
+          return [...items, ...sub];
+        };
+        srcs = collectItems(folder).filter(({ src }) => src?.documentName === "Item" || src?.type !== undefined);
+      }
+    }
+
+    if (!srcs.length) return;
+
+    let added = 0, skipped = 0;
+    for (const { src, uuid } of srcs) {
+      if (uuid && t.items.some(i => i.uuid === uuid)) { skipped++; continue; }
+      t.items.push({
+        id:          foundry.utils.randomID(),
+        uuid:        uuid ?? null,
+        name:        src.name,
+        img:         src.img ?? "icons/svg/item-bag.svg",
+        price:       src.system?.price ?? src.system?.cost ?? 0,
+        qty:         -1,
+        category:    "General",
+        description: src.system?.description?.value?.replace(/<[^>]+>/g, "") ?? src.system?.desc ?? "",
+      });
+      added++;
+    }
+
+    await _setShopTables(tables);
+    this.render(false);
+    if (skipped) ui.notifications.info(`Added ${added} item(s) — ${skipped} already in table, skipped.`);
+  }
+}
+
+function _handleShopClose({ tokenId }) {
+  const drawId = _shoppingDrawings.get(tokenId);
+  if (drawId && canvas.scene) {
+    canvas.scene.deleteEmbeddedDocuments("Drawing", [drawId]).catch(() => {});
+    _shoppingDrawings.delete(tokenId);
+  }
+}
+
+async function _handleShopOpen({ tokenId }) {
+  if (!game.user.isGM || !canvas.scene) return;
+  const token = canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === tokenId);
+  if (!token) return;
+  const { x, y } = token.document;
+  const gridSize  = canvas.grid.size;
+  const w = Math.ceil(gridSize * 0.9);
+  const drawing   = await canvas.scene.createEmbeddedDocuments("Drawing", [{
+    author: game.user.id,
+    x: x + Math.floor(gridSize * 0.05), y: y - 28,
+    shape: { type: "r", width: w, height: 22 },
+    fillType: 1, fillColor: "#1a1c20", fillAlpha: 0.9,
+    strokeWidth: 1, strokeColor: "#c8a84b", strokeAlpha: 1,
+    text: "SHOPPING", fontFamily: "Arial", fontSize: 11,
+    textColor: "#c8a84b",
+  }]);
+  if (drawing?.[0]) _shoppingDrawings.set(tokenId, drawing[0].id);
+}
+
+function _playGreetingSound(npcActor) {
+  const src = npcActor?.system?.greetingSound;
+  if (src) (foundry.audio?.AudioHelper ?? AudioHelper).play({ src, volume: 1, autoplay: true, loop: false }, true);
+}
+
+// ── Item Transfer (player-to-player) ─────────────────────────────
+async function _openItemTransferDialog(sourceActor, item) {
+  const targets = game.actors.filter(a => a.type === "character" && a.id !== sourceActor.id);
+  if (!targets.length) { ui.notifications.warn("No other player characters available to send items to."); return; }
+  const qtyMax = item.system?.qty ?? 1;
+  const options = targets.map(a => `<option value="${a.id}">${a.name}</option>`).join("");
+  const content = `
+    <div style="font-family:sans-serif;font-size:13px;display:flex;flex-direction:column;gap:8px;padding:6px 0;">
+      <div>Send <b>${item.name}</b> to:</div>
+      <select id="db-transfer-target" style="width:100%;padding:4px;">${options}</select>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <label>Quantity:</label>
+        <input id="db-transfer-qty" type="number" value="${qtyMax}" min="1" max="${qtyMax}" style="width:70px;padding:3px;"/>
+        <span style="color:#888;font-size:11px;">(max ${qtyMax})</span>
+      </div>
+    </div>`;
+  const DialogClass = foundry.appv1?.applications?.Dialog ?? Dialog;
+  new DialogClass({
+    title: "Send Item",
+    content,
+    buttons: {
+      send: {
+        label: "Send",
+        callback: async (html) => {
+          const targetActorId = html.find("#db-transfer-target").val();
+          const qty = Math.max(1, Math.min(qtyMax, parseInt(html.find("#db-transfer-qty").val()) || 1));
+          const data = {
+            type: "itemTransfer",
+            sourceActorId: sourceActor.id,
+            targetActorId,
+            itemId: item.id,
+            qty,
+          };
+          if (game.user.isGM) await _processItemTransfer(data);
+          else game.socket.emit("system.dawnbreaker-trials", data);
+        }
+      },
+      cancel: { label: "Cancel" }
+    },
+    default: "send",
+  }).render(true);
+}
+
+async function _processItemTransfer({ sourceActorId, targetActorId, itemId, qty }) {
+  const sourceActor = game.actors.get(sourceActorId);
+  const targetActor = game.actors.get(targetActorId);
+  const item = sourceActor?.items.get(itemId);
+  if (!sourceActor || !targetActor || !item) return;
+
+  const transferQty = Math.max(1, Math.min(qty ?? 1, item.system?.qty ?? 1));
+  const itemData = item.toObject();
+  itemData.system.qty = transferQty;
+  itemData.system.equipped = false;
+  delete itemData._id;
+
+  await targetActor.createEmbeddedDocuments("Item", [itemData]);
+
+  const remaining = (item.system?.qty ?? 1) - transferQty;
+  if (remaining > 0) await item.update({ "system.qty": remaining });
+  else await item.delete();
+
+  await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #4a9eff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">📤 <b>${sourceActor.name}</b> sent <b>${item.name}</b>${transferQty > 1 ? ` x${transferQty}` : ""} to <b>${targetActor.name}</b>.</div>` });
+}
+
+window._openShop = function(npcActorId, buyerActorId) {
+  new DawnbreakerShopApp(npcActorId, buyerActorId).render(true);
+};
+window._openShopTables = function() {
+  new DawnbreakerShopTablesApp().render(true);
+};
+
+// ── Token interaction patch ────────────────────────────────────
+// Intercept double-click on interactable NPC tokens
+Hooks.once("ready", function _patchTokenDblClick() {
+  const _orig = Token.prototype._onClickLeft2;
+  Token.prototype._onClickLeft2 = async function(event) {
+    const actor = this.actor;
+    if (actor?.getFlag("dawnbreaker-trials", "isInteractable")) {
+      // Find the player's own actor token on the scene
+      const myActor = game.user.character ?? game.actors.find(a => a.isOwner && a.type === "character");
+      const myToken = canvas.tokens.placeables.find(t => t.actor?.id === myActor?.id);
+      if (!myToken) {
+        ui.notifications.warn("You need a character token on the scene to interact.");
+        return;
+      }
+      // Proximity check — must be within 1.5 tiles (adjacent)
+      const dx = Math.abs(this.document.x - myToken.document.x) / canvas.grid.size;
+      const dy = Math.abs(this.document.y - myToken.document.y) / canvas.grid.size;
+      const dist = Math.max(dx, dy);
+      if (dist > 1.5) {
+        ui.notifications.warn(`${actor.name} is too far away to interact with.`);
+        return;
+      }
+      // Notify GM to show SHOPPING label
+      const payload = { type: "shopOpen", tokenId: myToken.document.id };
+      if (game.user.isGM) await _handleShopOpen(payload);
+      else game.socket.emit("system.dawnbreaker-trials", payload);
+      _playGreetingSound(actor);
+      new DawnbreakerShopApp(actor.id, myActor?.id ?? null, {}, myToken.document.id).render(true);
+      return;
+    }
+    return _orig.call(this, event);
+  };
+});
+
+// Remove mirror/flip animation — force duration 0 for texture scale changes
+// Clean up any orphaned SHOPPING drawings left from a previous session
+Hooks.on("canvasReady", () => {
+  if (!game.user.isGM || !canvas.scene) return;
+  const orphans = canvas.scene.drawings.filter(d => d.text === "SHOPPING").map(d => d.id);
+  if (orphans.length) canvas.scene.deleteEmbeddedDocuments("Drawing", orphans).catch(() => {});
+  _shoppingDrawings.clear();
+});
+
+Hooks.on("canvasReady", () => {
+  const _origOnUpdate = Token.prototype._onUpdate;
+  Token.prototype._onUpdate = function(changed, options, userId) {
+    if (foundry.utils.hasProperty(changed, "texture.scaleX") || foundry.utils.hasProperty(changed, "texture.scaleY")) {
+      options = foundry.utils.mergeObject(foundry.utils.deepClone(options ?? {}), { animationDuration: 0, animation: { duration: 0 } });
+    }
+    return _origOnUpdate.call(this, changed, options, userId);
+  };
+});
+
+// Suppress the Token HUD (right-click radial menu) entirely
+Hooks.on("getTokenContextMenuEntries", (_token, entries) => { entries.splice(0, entries.length); });
+Hooks.on("canvasReady", () => {
+  Token.prototype._onClickRight = function(event) { event.stopPropagation(); };
+  if (canvas.hud?.token) {
+    canvas.hud.token.bind = function() {};
+    canvas.hud.token.render = function() {};
+  }
+});
 
 // ── REGISTER ─────────────────────────────────────────────────
 Hooks.once("ready", () => {
@@ -1147,6 +2586,56 @@ Hooks.once("ready", () => {
     scope: "world", config: false, type: String, default: "physical",
   });
 
+  // ── Block HP/AR/KI restoration on Down actors ───────────
+  // Exception: updates that simultaneously remove the Down condition (revive effects)
+  Hooks.on("preUpdateActor", (actorDoc, changes, options) => {
+    if (options.allowHealDown) return; // explicit override for revive macros
+    const isDown = (actorDoc.system.conditions ?? []).some(c =>
+      c.name?.toLowerCase() === "down" || c.label === "down"
+    );
+    if (!isDown) return;
+
+    // If this same update removes Down, allow the heal (e.g. Sacrificial Lamb)
+    const newConditions = foundry.utils.getProperty(changes, "system.conditions");
+    if (Array.isArray(newConditions)) {
+      const stillDown = newConditions.some(c => c.name?.toLowerCase() === "down" || c.label === "down");
+      if (!stillDown) return;
+    }
+
+    let blocked = false;
+    const newHP = foundry.utils.getProperty(changes, "system.hp.current");
+    if (newHP !== undefined && newHP > (actorDoc.system.hp?.current ?? 0)) {
+      foundry.utils.setProperty(changes, "system.hp.current", actorDoc.system.hp?.current ?? 0);
+      blocked = true;
+    }
+    const newAR = foundry.utils.getProperty(changes, "system.ar.current");
+    if (newAR !== undefined && newAR > (actorDoc.system.ar?.current ?? 0)) {
+      foundry.utils.setProperty(changes, "system.ar.current", actorDoc.system.ar?.current ?? 0);
+      blocked = true;
+    }
+    const newKI = foundry.utils.getProperty(changes, "system.ki.current");
+    if (newKI !== undefined && newKI > (actorDoc.system.ki?.current ?? 0)) {
+      foundry.utils.setProperty(changes, "system.ki.current", actorDoc.system.ki?.current ?? 0);
+      blocked = true;
+    }
+    if (blocked) ui.notifications?.info(`${actorDoc.name} is Down — healing blocked.`);
+  });
+
+  // ── Cursed Reflection — WIL check before KI is spent ────
+  Hooks.on("preUpdateActor", (actorDoc, changes, options) => {
+    if (options.cursedReflectionChecked) return; // already passed the check
+    const hasCR = (actorDoc.system.conditions ?? []).some(c =>
+      c.name?.toLowerCase() === "cursed reflection" || c.label?.toLowerCase() === "cursed reflection"
+    );
+    if (!hasCR) return;
+    const newKI  = foundry.utils.getProperty(changes, "system.ki.current");
+    const curKI  = actorDoc.system.ki?.current ?? 0;
+    if (newKI === undefined || newKI >= curKI) return; // not spending KI
+    // Cancel this update and run the async check
+    _cursedReflectionCheck(actorDoc, changes).catch(console.error);
+    return false;
+  });
+
   // ── Scorpid Scales auto-toggle ──────────────────────────
   Hooks.on("updateActor", async (actor, changes) => {
     // Only trigger on HP reduction
@@ -1182,8 +2671,7 @@ Hooks.once("ready", () => {
       : "Received a physical attack — switching to magical resistance";
 
     await armor.update({
-      "system.bonuses.pr": newMode === "physical" ? 5 : 0,
-      "system.bonuses.mr": newMode === "magical"  ? 5 : 0,
+      "flags.dawnbreaker-trials.modeBonus": newMode === "physical" ? { pr: 5, mr: 0 } : { pr: 0, mr: 5 },
       "system.effect":     `mode:${newMode}`,
     });
 
@@ -1227,6 +2715,7 @@ class DawnbreakerItemData extends foundry.abstract.TypeDataModel {
       reach:       new fields.NumberField({ ...req, initial: 1, integer: true, min: 1 }),
       cost:        new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
       qty:         new fields.NumberField({ ...req, initial: 1, integer: true, min: 0 }),
+      stackLimit:  new fields.NumberField({ ...req, initial: 0, integer: true, min: 0 }),
       equipped:    new fields.BooleanField({ initial: false }),
       expires:     new fields.BooleanField({ initial: false }),
       effect:      new fields.StringField({ initial: "" }),
@@ -1237,6 +2726,13 @@ class DawnbreakerItemData extends foundry.abstract.TypeDataModel {
       animationFile:  new fields.StringField({ initial: "" }),
       animationScale: new fields.NumberField({ required: false, nullable: true, initial: 1.0 }),
       animationSound: new fields.StringField({ initial: "" }),
+
+      rarity:        new fields.StringField({ initial: "basic" }),
+      upgradeLevel:  new fields.NumberField({ required: false, nullable: false, initial: 0, integer: true, min: 0, max: 7 }),
+      armorSlotType: new fields.StringField({ initial: "" }),
+      forgePath:          new fields.StringField({ initial: "" }),
+      forgePathSecondary: new fields.StringField({ initial: "" }),
+      isTwoHanded:        new fields.BooleanField({ initial: false }),
 
       bonuses: new fields.SchemaField({
         dam: bonus(), str: bonus(), con: bonus(), agi: bonus(),
@@ -1264,8 +2760,9 @@ class DawnbreakerItemSheet extends foundry.appv1.sheets.ItemSheet {
     return foundry.utils.mergeObject(super.defaultOptions, {
       classes: ["dawnbreaker","dawnbreaker-item","sheet"],
       template: "systems/dawnbreaker-trials/templates/item-sheet.html",
-      width: 520,
-      height: 480,
+      width: 560,
+      height: 600,
+      resizable: true,
       tabs: [{ navSelector: ".tabs", contentSelector: "form", initial: "item-details" }],
     });
   }
@@ -1274,6 +2771,102 @@ class DawnbreakerItemSheet extends foundry.appv1.sheets.ItemSheet {
     const context = super.getData();
     context.system = this.item.system;
     context.item   = this.item;
+    context.isGM   = game.user.isGM;
+    const level = this.item.system?.upgradeLevel ?? 0;
+    const rarity = this.item.system?.rarity ?? "basic";
+    const isWeapon = this.item.system?.isWeapon ?? (this.item.system?.itemType === "weapon");
+    const isArmor  = this.item.type === "armor" || this.item.system?.itemType === "armor";
+    const rawEnhs = this.item.getFlag("dawnbreaker-trials", "enhancements") ?? [];
+    const totalSlots = 1 + level;
+    const enhSlots = [];
+    const slot0Flag = this.item.getFlag("dawnbreaker-trials", "slot0") ?? {};
+    const selectedGrowthPath = this.item.getFlag("dawnbreaker-trials", "growthPath") ?? null;
+    const forgePath = this.item.system?.forgePath ?? "";
+    const armorSlot = this.item.system?.slot ?? "";
+    const weaponGrowth = (isWeapon && selectedGrowthPath) ? _getPathLevelGrowth(selectedGrowthPath, level) : {};
+
+    // Slot0 label: macro > custom stat > weapon DAM > armor base bonuses
+    let slot0Label;
+    if (slot0Flag.macroName) {
+      slot0Label = `🔒 ${slot0Flag.macroName}`;
+    } else if (slot0Flag.stat) {
+      slot0Label = `${slot0Flag.stat.toUpperCase()} +${slot0Flag.value ?? 0}`;
+    } else if (isWeapon) {
+      const bonusDam = this.item.system?.bonuses?.dam ?? 0;
+      const growthDam = weaponGrowth.dam ?? 0;
+      const fixedDam = selectedGrowthPath ? 0 : (2 + level);
+      const totalDam = fixedDam + bonusDam + growthDam;
+      const otherParts = Object.entries(weaponGrowth).filter(([k,v]) => v && k !== 'dam').map(([k,v]) => `+${v}${k.toUpperCase()}`);
+      const parts = [`DAM +${totalDam}`, ...otherParts];
+      slot0Label = parts.join(" ");
+    } else if (isArmor) {
+      const b = this.item.system?.bonuses ?? {};
+      const parts = Object.entries(b).filter(([,v]) => v > 0).map(([k,v]) => `+${v}${k.toUpperCase()}`);
+      slot0Label = parts.length ? parts.join(" ") : "BASE";
+    } else {
+      slot0Label = "BASE";
+    }
+
+    // Growth path label for slot0 sub-text
+    let growthLabel = "";
+    if (isArmor || isWeapon) {
+      const rates = _getGrowthPathRates(selectedGrowthPath, forgePath, armorSlot);
+      growthLabel = _formatGrowthRates(rates);
+    }
+
+    // Build growth path dropdown options
+    let customPaths = [];
+    try { customPaths = game.settings.get("dawnbreaker-trials", "growthPaths") ?? []; } catch(e) {}
+    const growthPathOptions = [
+      { id: "", name: "— Auto (from forge type) —" },
+      ...BUILTIN_GROWTH_PATHS,
+      ...customPaths,
+    ];
+
+    enhSlots.push({ slotIndex: 0, label: slot0Label, badge: "FIXED", type: "fixed" });
+    for (let s = 1; s < totalSlots; s++) {
+      const e = rawEnhs[s - 1];
+      if (e?.macroName) {
+        enhSlots.push({ slotIndex: s, label: e.macroName, badge: "🔒 ABILITY", type: "gmfixed" });
+      } else {
+        enhSlots.push(e
+          ? { slotIndex: s, label: `${e.label ?? e.stat?.toUpperCase()} +${e.value}`, badge: e.gmFixed ? "🔒 GM" : (e.essence ? e.essence.toUpperCase() : (isWeapon ? "EPHI" : "AMYNTI")), type: e.gmFixed ? "gmfixed" : (e.essence ? "elemental" : "filled") }
+          : { slotIndex: s, label: "EMPTY", badge: "", type: "empty" }
+        );
+      }
+    }
+    context.enhSlots   = enhSlots;
+    context.hasEnhData = ["weapon","armor","offhand"].includes(this.item.system?.itemType ?? "") || ["weapon","armor","offhand"].includes(this.item.type ?? "") || level > 0 || rawEnhs.length > 0;
+    context.rarityLabel = _rarityLabel(rarity);
+    context.rarityColor = _rarityColor(rarity);
+    const enhSlotsGM = [];
+    const s0IsAbility = !!slot0Flag.macroName;
+    // Compute slot0 base stat display from growth path or item bonuses
+    let slot0BaseSummary = "";
+    if (isArmor) {
+      const pathRatesObj = _getGrowthPathRates(selectedGrowthPath, forgePath, armorSlot);
+      const b = this.item.system?.bonuses ?? {};
+      const parts = Object.entries(b).filter(([,v]) => v > 0).map(([k,v]) => `+${v} ${k.toUpperCase()}`);
+      slot0BaseSummary = parts.length ? parts.join("  ") : "— set via Growth Path —";
+    } else if (isWeapon) {
+      const bonusDam = this.item.system?.bonuses?.dam ?? 0;
+      const growthDam = weaponGrowth.dam ?? 0;
+      const fixedDam = selectedGrowthPath ? 0 : (2 + level);
+      const totalDam = fixedDam + bonusDam + growthDam;
+      const otherParts = Object.entries(weaponGrowth).filter(([k,v]) => v && k !== 'dam').map(([k,v]) => `+${v} ${k.toUpperCase()}`);
+      slot0BaseSummary = [`DAM +${totalDam}`, ...otherParts].join("  ");
+    }
+    enhSlotsGM.push({ slotIndex: 0, isSlot0: true, isAbility: s0IsAbility, macroName: slot0Flag.macroName ?? "", stat: slot0Flag.stat ?? "", value: slot0Flag.value ?? (isWeapon ? 2 + level : 0), essence: "", isFilled: !!(slot0Flag.stat || slot0Flag.macroName), slot0BaseSummary });
+    for (let s = 1; s < totalSlots; s++) {
+      const e = rawEnhs[s - 1];
+      const isAbility = !!(e?.macroName);
+      enhSlotsGM.push({ slotIndex: s, isSlot0: false, isAbility, macroName: e?.macroName ?? "", stat: e?.stat ?? "", value: e?.value ?? 0, essence: e?.essence ?? "", isFilled: !!e });
+    }
+    context.enhSlotsGM = enhSlotsGM;
+    context.isArmor = isArmor;
+    context.showGrowthPath = isArmor || isWeapon;
+    context.selectedGrowthPath = selectedGrowthPath ?? "";
+    context.growthPathOptions = growthPathOptions;
     return context;
   }
 
@@ -1286,6 +2879,86 @@ class DawnbreakerItemSheet extends foundry.appv1.sheets.ItemSheet {
       const formula   = this.item.system.rollFormula;
       _executeMacroOrRoll(macroName, formula, null, this.item);
     });
+
+    if (game.user.isGM) {
+      const saveSlot = async (slot) => {
+        const row = html.find(`.db-enh-gm-row[data-slot='${slot}']`)[0];
+        if (!row) return;
+        const isAbility = row.querySelector(".db-enh-gm-ability-toggle")?.checked ?? false;
+        if (slot === 0) {
+          if (isAbility) {
+            const macro = (row.querySelector(".db-enh-gm-macro")?.value ?? "").trim() || null;
+            await this.item.setFlag("dawnbreaker-trials", "slot0", { macroName: macro });
+          } else {
+            const stat = row.querySelector(".db-enh-gm-stat")?.value || null;
+            const val  = parseInt(row.querySelector(".db-enh-gm-val")?.value) || 0;
+            await this.item.setFlag("dawnbreaker-trials", "slot0", { stat, value: val });
+          }
+        } else {
+          const rawEnhs = foundry.utils.deepClone(this.item.getFlag("dawnbreaker-trials", "enhancements") ?? []);
+          const idx = slot - 1;
+          if (isAbility) {
+            const macro = (row.querySelector(".db-enh-gm-macro")?.value ?? "").trim();
+            rawEnhs[idx] = macro ? { macroName: macro, gmFixed: true, stat: null, value: 0, label: macro } : undefined;
+          } else {
+            const stat = row.querySelector(".db-enh-gm-stat")?.value ?? "";
+            const val  = parseInt(row.querySelector(".db-enh-gm-val")?.value) || 0;
+            const ess  = row.querySelector(".db-enh-gm-essence")?.value || null;
+            rawEnhs[idx] = stat ? { stat, value: val, label: stat.toUpperCase(), essence: ess, gmFixed: true, rerollCount: rawEnhs[idx]?.rerollCount ?? 0 } : undefined;
+          }
+          await this.item.setFlag("dawnbreaker-trials", "enhancements", rawEnhs.filter(e => e?.stat || e?.macroName));
+        }
+      };
+
+      html.find(".db-enh-gm-ability-toggle").on("change", async (ev) => {
+        const slot = parseInt(ev.currentTarget.closest(".db-enh-gm-row").dataset.slot);
+        const isAbility = ev.currentTarget.checked;
+        const row = ev.currentTarget.closest(".db-enh-gm-row");
+        row.querySelector(".db-enh-gm-stat-block").style.display = isAbility ? "none" : "";
+        row.querySelector(".db-enh-gm-ability-block").style.display = isAbility ? "" : "none";
+        await saveSlot(slot);
+      });
+
+      html.find(".db-enh-gm-stat, .db-enh-gm-val, .db-enh-gm-essence, .db-enh-gm-macro").on("change", async (ev) => {
+        const slot = parseInt(ev.currentTarget.closest(".db-enh-gm-row").dataset.slot);
+        await saveSlot(slot);
+      });
+
+      html.find(".db-enh-gm-clear").click(async (ev) => {
+        const slot = parseInt(ev.currentTarget.dataset.slot);
+        if (slot === 0) {
+          await this.item.setFlag("dawnbreaker-trials", "slot0", {});
+        } else {
+          await this.item.setFlag("dawnbreaker-trials", "enhancements",
+            (this.item.getFlag("dawnbreaker-trials", "enhancements") ?? []).filter((e, i) => (e?.stat || e?.macroName) && i !== slot - 1));
+        }
+      });
+
+      html.find(".db-growth-path-select").on("change", async (ev) => {
+        const val = ev.currentTarget.value;
+        if (val) {
+          let path = BUILTIN_GROWTH_PATHS.find(p => p.id === val);
+          if (!path) {
+            try {
+              const customs = game.settings.get("dawnbreaker-trials", "growthPaths") ?? [];
+              path = customs.find(p => p.id === val);
+            } catch(e) {}
+          }
+          const update = { [`flags.dawnbreaker-trials.growthPath`]: val };
+          // Zero out all bonus stats first, then apply path base values
+          const allBonusKeys = ["dam","str","con","agi","dex","int","spr","for","wil","cha","mv","ap","ass","pr","brk","mr","ar","hp","ki"];
+          for (const k of allBonusKeys) update[`system.bonuses.${k}`] = 0;
+          if (path?.base) {
+            for (const [k, v] of Object.entries(path.base)) update[`system.bonuses.${k}`] = v;
+          }
+          await this.item.update(update);
+        } else {
+          await this.item.update({ [`flags.dawnbreaker-trials.growthPath`]: null });
+        }
+      });
+
+      html.find(".db-growth-path-manage").click(() => window._openGrowthPathEditor());
+    }
   }
 }
 
@@ -1310,6 +2983,13 @@ function getEquippedBonuses(actor) {
     if (!b) continue;
     for (const key of Object.keys(totals)) {
       totals[key] += (b[key] ?? 0);
+    }
+    // Mode bonus (Scorpid Scales style) stored in flag, separate from growth path bonuses
+    const modeBonus = item.getFlag?.("dawnbreaker-trials", "modeBonus");
+    if (modeBonus) {
+      for (const key of Object.keys(totals)) {
+        totals[key] += (modeBonus[key] ?? 0);
+      }
     }
   }
   return totals;
@@ -1422,20 +3102,105 @@ async function _highlightToken(token, active) {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  CURSED REFLECTION — async WIL check helper
+//  Returns true if the actor may proceed, false if blocked.
+//  Call window._checkCursedReflection(actor) from any KI macro.
+// ═══════════════════════════════════════════════════════════
+async function _cursedReflectionCheck(actorDoc, changes) {
+  const DC = 10;
+  const wilMod = actorDoc.type === "npc"
+    ? (actorDoc.system.stats?.WIL ?? 0)
+    : (actorDoc.system.stats?.WIL?.mod ?? 0);
+
+  const roll = await new Roll("1d20 + @v", { v: wilMod }).evaluate();
+  await roll.toMessage({
+    speaker: ChatMessage.getSpeaker({ actor: actorDoc }),
+    flavor: `<b>${actorDoc.name}</b> — Cursed Reflection WIL Check (DC ${DC})`,
+    rollMode: "publicroll",
+  });
+
+  if (roll.total >= DC) {
+    // Passed — re-apply the blocked KI update
+    await actorDoc.update(changes, { cursedReflectionChecked: true });
+    ChatMessage.create({
+      content: `<div style="color:#2ecc71;font-weight:700;font-size:13px;letter-spacing:1px;">✔ ${actorDoc.name} resists the Cursed Reflection! (${roll.total} ≥ ${DC})</div>`,
+      speaker: ChatMessage.getSpeaker({ actor: actorDoc }),
+    });
+  } else {
+    ChatMessage.create({
+      content: `<div style="color:#e05555;font-weight:700;font-size:13px;letter-spacing:1px;">✕ Cursed Reflection blocks ${actorDoc.name}'s cast! (${roll.total} < ${DC})</div>`,
+      speaker: ChatMessage.getSpeaker({ actor: actorDoc }),
+    });
+  }
+}
+
+// Universal KI spender for macros.
+// Usage: if (!await window._spendKI(actor, cost)) return;
+// Runs Cursed Reflection check if the actor has it, then deducts KI.
+// Returns false if blocked (CR failed or not enough KI), true if spent successfully.
+window._spendKI = async function(actorDoc, amount) {
+  if (!actorDoc) return false;
+  const currentKI = actorDoc.system.ki?.current ?? 0;
+
+  // KI availability check
+  if (amount > 0 && currentKI < amount) {
+    ui.notifications.warn(`Not enough KI! Need ${amount}, have ${currentKI}.`);
+    return false;
+  }
+
+  // Cursed Reflection check
+  const hasCR = (actorDoc.system.conditions ?? []).some(c =>
+    c.name?.toLowerCase() === "cursed reflection" || c.label?.toLowerCase() === "cursed reflection"
+  );
+  if (hasCR) {
+    const DC = 10;
+    const wilMod = actorDoc.type === "npc"
+      ? (actorDoc.system.stats?.WIL ?? 0)
+      : (actorDoc.system.stats?.WIL?.mod ?? 0);
+    const roll = await new Roll("1d20 + @v", { v: wilMod }).evaluate();
+    await roll.toMessage({
+      speaker: ChatMessage.getSpeaker({ actor: actorDoc }),
+      flavor: `<b>${actorDoc.name}</b> — Cursed Reflection WIL Check (DC ${DC})`,
+      rollMode: "publicroll",
+    });
+    const passed = roll.total >= DC;
+    await ChatMessage.create({ content: passed
+      ? `<div style="background:#1a1c20;border:1px solid #2ecc71;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">✔ <b>${actorDoc.name}</b> resists <b>Cursed Reflection</b>! (${roll.total} ≥ ${DC})</div>`
+      : `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">✕ <b>Cursed Reflection</b> blocks <b>${actorDoc.name}</b>'s ability! (${roll.total} < ${DC})</div>`
+    });
+    if (!passed) return false;
+  }
+
+  // Deduct KI
+  if (amount > 0) {
+    await actorDoc.update({ "system.ki.current": Math.max(0, currentKI - amount) }, { cursedReflectionChecked: true });
+  }
+  return true;
+};
+
+// ═══════════════════════════════════════════════════════════
 //  MOVEMENT RANGE HIGHLIGHT
 // ═══════════════════════════════════════════════════════════
 const CTB_MOVE_LAYER = "crucible.movement";
+let _dbMoveActiveTokenId = null; // token whose movement range is currently displayed
 
 function _getMVTotal(actor) {
-  if (actor.type === "npc") return actor.system.stats?.MV ?? 3;
-  return actor.system.stats?.MV?.total ?? 3;
+  let mv = actor.type === "npc" ? (actor.system.stats?.MV ?? 3) : (actor.system.stats?.MV?.total ?? 3);
+  const conditions = actor.system.conditions ?? [];
+  // Crippled — MV drops to 0 until condition is removed
+  if (conditions.some(c => c.label === "crippled" || c.name?.toLowerCase() === "crippled")) return 0;
+  // Slowed — reduce MV by the amount stored in effect (e.g. effect: "3" → −3 MV)
+  const slowedCond = conditions.find(c => c.label === "slowed" || c.name?.toLowerCase() === "slowed");
+  if (slowedCond) mv = Math.max(0, mv - (parseInt(slowedCond.effect) || 0));
+  return mv;
 }
 
-async function _showMovementRange(token) {
+async function _showMovementRange(token, mvOverride = null) {
   if (!canvas.interface?.grid) return;
   const actor = token.actor;
   if (!actor) return;
-  const mv   = _getMVTotal(actor);
+  _dbMoveActiveTokenId = token.document?.id ?? token.id;
+  const mv   = mvOverride !== null ? mvOverride : _getMVTotal(actor);
   const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
   const tileX = Math.round(token.document.x / size);
   const tileY = Math.round(token.document.y / size);
@@ -1525,14 +3290,171 @@ async function _showMovementRange(token) {
     const [tx, ty] = tileKey.split(",").map(Number);
     canvas.interface.grid.highlightPosition(CTB_MOVE_LAYER, { x: tx * size, y: ty * size, color: 0x3399ff, border: 0x0055cc, alpha: 0.25 });
   }
+  // Push movement layer to the back so other highlights (targets, blink) render on top
+  try {
+    const mvLayer = canvas.interface.grid.getHighlightLayer(CTB_MOVE_LAYER);
+    if (mvLayer) {
+      mvLayer.zIndex = -100;
+      const parent = mvLayer.parent;
+      if (parent) { parent.sortableChildren = true; parent.sortChildren(); }
+    }
+  } catch(e) {}
 }
 
 async function _clearMovementRange() {
+  _dbMoveActiveTokenId = null;
   canvas.interface?.grid?.clearHighlightLayer(CTB_MOVE_LAYER);
 }
 
+// ═══════════════════════════════════════════════════════════
+//  DUPLICATE TOKEN — AUTO-UNLINK, AUTO-NUMBER, CANVAS OVERLAY
+// ═══════════════════════════════════════════════════════════
+
+function _getBaseName(name) {
+  return (name ?? "").replace(/\s+\d+$/, "").trim();
+}
+
+function _refreshDbNumberOverlay(token) {
+  if (token._dbNumOverlay) {
+    try { token._dbNumOverlay.destroy({ children: true }); } catch(e) {}
+    token._dbNumOverlay = null;
+  }
+  const match = token.document?.name?.match(/\s(\d+)$/);
+  if (!match) return;
+  const num = match[1];
+  const gridSize = canvas.grid?.sizeX ?? canvas.grid?.size ?? 100;
+  const tokenW   = (token.document?.width ?? 1) * gridSize;
+  const fontSize = Math.max(16, Math.round(tokenW * 0.22));
+  const style = new PIXI.TextStyle({
+    fontFamily: "'Roboto Condensed', Arial Narrow, Arial, sans-serif",
+    fontSize,
+    fontWeight: "900",
+    fill: 0xffffff,
+    stroke: 0x000000,
+    strokeThickness: Math.max(3, Math.round(fontSize * 0.18)),
+    dropShadow: false,
+  });
+  const text = new PIXI.Text(num, style);
+  text.anchor.set(0, 0);
+  text.position.set(4, 4);
+  text.zIndex = 999;
+  token._dbNumOverlay = text;
+  token.addChild(text);
+}
+
+// Draw / refresh overlay whenever a token is rendered
+Hooks.on("drawToken",    token => _refreshDbNumberOverlay(token));
+Hooks.on("refreshToken", token => {
+  if (token._dbNumOverlay) return; // already exists
+  _refreshDbNumberOverlay(token);
+});
+
+// Re-number and re-overlay all siblings when a token is placed
+Hooks.on("createToken", async (tokenDoc) => {
+  if (!game.user.isGM) return;
+  const scene = tokenDoc.parent;
+  if (!scene) return;
+  const actorId = tokenDoc.actorId;
+  if (!actorId) return;
+
+  const allSame = [...scene.tokens.filter(t => t.actorId === actorId)]
+    .sort((a, b) => (a.id < b.id ? -1 : 1)); // oldest first
+
+  if (allSame.length <= 1) return; // only one on scene — nothing to do
+
+  const baseName = _getBaseName(game.actors.get(actorId)?.name ?? tokenDoc.name);
+
+  // Build batch update: number all siblings, unlink all except the oldest
+  const updates = allSame.map((t, i) => {
+    const expectedName = `${baseName} ${i + 1}`;
+    const update = { _id: t.id };
+    if (t.name !== expectedName)        update.name      = expectedName;
+    if (i > 0 && t.actorLink !== false) update.actorLink = false;
+    return update;
+  }).filter(u => Object.keys(u).length > 1);
+
+  if (updates.length) await scene.updateEmbeddedDocuments("Token", updates);
+
+  // Refresh PIXI overlays for all affected tokens
+  setTimeout(() => {
+    for (const t of allSame) {
+      const obj = canvas.tokens.placeables.find(p => p.document.id === t.id);
+      if (obj) _refreshDbNumberOverlay(obj);
+    }
+  }, 120);
+});
+
+// Re-number when a duplicate is deleted so gaps don't appear
+Hooks.on("deleteToken", async (tokenDoc) => {
+  if (!game.user.isGM) return;
+  const scene = tokenDoc.parent;
+  if (!scene) return;
+  const actorId = tokenDoc.actorId;
+  if (!actorId) return;
+
+  const allSame = [...scene.tokens.filter(t => t.actorId === actorId && t.id !== tokenDoc.id)]
+    .sort((a, b) => (a.id < b.id ? -1 : 1));
+
+  if (allSame.length === 0) return;
+
+  const baseName = _getBaseName(game.actors.get(actorId)?.name ?? tokenDoc.name);
+
+  if (allSame.length === 1) {
+    // Only one left — strip the number, revert to plain name
+    if (allSame[0].name !== baseName)
+      await scene.updateEmbeddedDocuments("Token", [{ _id: allSame[0].id, name: baseName }]);
+  } else {
+    // Renumber remaining tokens
+    const updates = allSame.map((t, i) => {
+      const expectedName = `${baseName} ${i + 1}`;
+      return t.name !== expectedName ? { _id: t.id, name: expectedName } : null;
+    }).filter(Boolean);
+    if (updates.length) await scene.updateEmbeddedDocuments("Token", updates);
+  }
+
+  setTimeout(() => {
+    for (const t of allSame) {
+      const obj = canvas.tokens.placeables.find(p => p.document.id === t.id);
+      if (obj) _refreshDbNumberOverlay(obj);
+    }
+  }, 120);
+});
+
+// Refresh overlay when token name changes (e.g. after renumber)
 Hooks.on("updateToken", async (tokenDoc, changes) => {
-  if (changes.x !== undefined || changes.y !== undefined) await _clearMovementRange();
+  if (changes.name !== undefined) {
+    setTimeout(() => {
+      const obj = canvas.tokens.placeables.find(p => p.document.id === tokenDoc.id);
+      if (obj) _refreshDbNumberOverlay(obj);
+    }, 50);
+  }
+});
+
+Hooks.on("updateToken", async (tokenDoc, changes) => {
+  if (changes.x !== undefined || changes.y !== undefined) {
+    // If this is the token whose movement range is displayed, redraw from new position
+    const tokenId = tokenDoc.id ?? tokenDoc._id;
+    if (_dbMoveActiveTokenId && _dbMoveActiveTokenId === tokenId) {
+      const token = canvas.tokens.placeables.find(t => t.document.id === tokenId || t.id === tokenId);
+      const actor = token?.actor;
+      if (token && actor) {
+        const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+        const startX = actor.system.turnPhase?.startX ?? tokenDoc.x;
+        const startY = actor.system.turnPhase?.startY ?? tokenDoc.y;
+        const startTileX = Math.round(startX / size);
+        const startTileY = Math.round(startY / size);
+        const newX = changes.x ?? tokenDoc.x;
+        const newY = changes.y ?? tokenDoc.y;
+        const curTileX = Math.round(newX / size);
+        const curTileY = Math.round(newY / size);
+        const distMoved = Math.abs(curTileX - startTileX) + Math.abs(curTileY - startTileY);
+        const remaining = Math.max(0, _getMVTotal(actor) - distMoved);
+        // Small delay so token position updates before BFS runs
+        setTimeout(() => _showMovementRange(token, remaining), 50);
+      }
+    }
+    // else: no movement range was shown, nothing to update
+  }
 
   // Clear Cover Fire stance when token moves
   if ((changes.x !== undefined || changes.y !== undefined) && tokenDoc.actor) {
@@ -1570,6 +3492,16 @@ Hooks.on("updateToken", async (tokenDoc, changes) => {
             .play();
         }
       }
+    }
+  }
+
+  // Light Aura — recheck AURA conditions when any token moves
+  if (game.user.isGM && (changes.x !== undefined || changes.y !== undefined)) {
+    for (const tok of canvas.tokens.placeables) {
+      if (!tok.actor) continue;
+      const laFlag = tok.actor.getFlag("dawnbreaker-trials", "lightAura");
+      if (!laFlag?.active || !laFlag.tokenId) continue;
+      await _lightAuraUpdateAllyConditions(tok.actor, laFlag.tokenId, laFlag.prMRBonus ?? 0);
     }
   }
 });
@@ -1804,6 +3736,80 @@ Hooks.on("updateActor", async (actor, changes) => {
   }
 });
 
+// ── Shimmering Scales — auto-toggle Shimmer condition based on HP% ──
+Hooks.on("updateActor", async (actor, changes, options) => {
+  if (options?._shimmerUpdate) return;
+  const newHP = foundry.utils.getProperty(changes, "system.hp.current");
+  if (newHP === undefined) return;
+  if (!game.user.isGM) return;
+
+  const hasScales = actor.items?.some(i => i.type === "ability" && i.name.toLowerCase().includes("shimmering scales"))
+    || Object.values(actor.system.abilities ?? {}).some(arr => Array.isArray(arr) && arr.some(a => a.name?.toLowerCase().includes("shimmering scales")));
+  if (!hasScales) return;
+
+  const hpMax = actor.system.hp?.max ?? 0;
+  const belowHalf = hpMax > 0 && newHP / hpMax < 0.5;
+  const conditions = foundry.utils.deepClone(actor.system.conditions ?? []);
+  const hasShimmer = conditions.some(c => c.label === "shimmer");
+
+  if (belowHalf && !hasShimmer) {
+    conditions.push({ name: "Shimmer", label: "shimmer", duration: 0, instance: 0, effect: "shimmer" });
+    await actor.update({ "system.conditions": conditions }, { _shimmerUpdate: true });
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">✨ <b>${actor.name}</b> activates <b style="color:#64b5f6;">Shimmer</b> — +5 PR & +5 MR while below 50% HP!</div>` });
+  } else if (!belowHalf && hasShimmer) {
+    const cleaned = conditions.filter(c => c.label !== "shimmer");
+    await actor.update({ "system.conditions": cleaned }, { _shimmerUpdate: true });
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">✨ <b>${actor.name}</b>'s <b>Shimmer</b> fades — HP restored above 50%.</div>` });
+  }
+});
+
+// ── Permanent passive conditions — re-enforce after any condition update ──
+// If an actor has a passive ability whose name matches a condition label,
+// that condition is considered permanent and will be re-added if removed.
+const _PERMANENT_CONDITION_PASSIVES = ["cursed reflection"];
+
+Hooks.on("updateActor", async (actor, changes, options) => {
+  if (options?._permanentCondRestore) return; // prevent re-trigger loop
+  const newConditions = foundry.utils.getProperty(changes, "system.conditions");
+  if (!Array.isArray(newConditions)) return;
+
+  // Collect which permanent conditions this actor's passives demand
+  const allAbilities = [
+    ...(actor.system.abilities?.passives       ?? []),
+    ...(actor.system.abilities?.mainActives    ?? []),
+    ...(actor.system.abilities?.secondaryActives ?? []),
+    ...(actor.system.abilities?.reactions      ?? []),
+    ...(actor.system.abilities?.movement       ?? []),
+    ...(actor.system.abilities?.tracker        ?? []),
+  ];
+  const permanentNeeded = _PERMANENT_CONDITION_PASSIVES.filter(label =>
+    allAbilities.some(a => a.name?.toLowerCase().includes(label))
+  );
+  if (!permanentNeeded.length) return;
+
+  const missing = permanentNeeded.filter(label =>
+    !newConditions.some(c => c.label?.toLowerCase() === label || c.name?.toLowerCase() === label)
+  );
+  if (!missing.length) return;
+
+  const restored = missing.map(label => ({
+    name:     label.split(" ").map(w => w[0].toUpperCase() + w.slice(1)).join(" "),
+    label:    label,
+    duration: 0,
+    instance: 0,
+    effect:   "",
+  }));
+
+  await actor.update(
+    { "system.conditions": [...newConditions, ...restored] },
+    { _permanentCondRestore: true }
+  );
+
+  for (const r of restored) {
+    ui.notifications?.info(`${actor.name}: "${r.name}" is a permanent passive — condition restored.`);
+  }
+});
+
 // ═══════════════════════════════════════════════════════════
 //  ASSIST SYSTEM
 //  Scans adjacent allied tokens for Camaraderie/assist abilities
@@ -1909,6 +3915,11 @@ window._getBoldenBonus = function(actor) {
 
 
 
+// Returns PR/MR bonus this actor receives from a nearby allied Light Aura caster (range 5)
+// PR/MR bonus from Light Aura is now baked into PR.total/MR.total via the AURA condition in prepareData.
+// This function returns 0 so macros that call it don't double-apply the bonus.
+
+
 // Consume one instance of a condition (instance-based) or leave it alone (duration-based)
 async function _consumeGuardInstance(actor, conditionName) {
   const conditions = foundry.utils.deepClone(actor.system.conditions ?? []);
@@ -1987,14 +3998,14 @@ async function _checkReactiveItems(actor, attackType) {
       if (attackType !== currentMode) continue;
       const newMode   = attackType === "physical" ? "magical" : "physical";
       const modeColor = newMode === "physical" ? "#e07a30" : "#a080ff";
-      await item.update({ "system.bonuses.pr": newMode === "physical" ? 5 : 0, "system.bonuses.mr": newMode === "magical" ? 5 : 0, "system.effect": `mode:${newMode}` });
+      await item.update({ "flags.dawnbreaker-trials.modeBonus": newMode === "physical" ? { pr: 5, mr: 0 } : { pr: 0, mr: 5 }, "system.effect": `mode:${newMode}` });
       await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid ${modeColor};border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🐍 <b>Scorpid Scales</b> — ${actor.name} switches to ${newMode === "physical" ? "Physical (+5 PR)" : "Magical (+5 MR)"} resistance.</div>` });
     }
   }
 }
 
 // Apply Down condition when HP hits 0
-async function _applyDownCondition(actor) {
+async function _applyDownCondition(actor, { suppressChat = false } = {}) {
   if (!actor) return;
 
   // Healing Beacon — destroy immediately on any hit instead of going Down
@@ -2015,9 +4026,11 @@ async function _applyDownCondition(actor) {
   conditions.push({ name: "Down", label: "down", duration: 3, effect: "Unit is incapacitated. Removed from combat after 3 turns." });
   await actor.update({ "system.conditions": conditions });
   await _applyStatusEffect(actor, "down", true);
-  await ChatMessage.create({
-    content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">☠ <b>${actor.name}</b> is <span style="color:#e05555;font-weight:700;">Down!</span> — 3 turns remaining before removal from combat.</div>`
-  });
+  if (!suppressChat) {
+    await ChatMessage.create({
+      content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">☠ <b>${actor.name}</b> is <span style="color:#e05555;font-weight:700;">Down!</span> — 3 turns remaining before removal from combat.</div>`
+    });
+  }
 
   // Sacrificial Lamb — check if any adjacent ally Adept can spend KI to revive
   if (!canvas?.tokens?.placeables) return;
@@ -2384,6 +4397,38 @@ function _getNPCAnimSlot(actor, slotName) {
 }
 
 // ── Crystal Burrower BP2 — Shell Shatter (AR reaches 0) ──────
+// ── Golem Sentry: auto-track BRK/AR hits against a detaining golem ──
+// 2 landed AR-damage hits break the grip: frees the target of all Detain
+// stacks/conditions, and releases every golem currently detaining them.
+async function _checkGolemGripBreak(golemActor, actualARDmg) {
+  if (actualARDmg <= 0) return;
+  const state = golemActor.getFlag("dawnbreaker-trials", "detainState");
+  if (!state?.active) return;
+
+  const hits = (state.brkHitsTaken ?? 0) + 1;
+  if (hits < 2) {
+    await golemActor.setFlag("dawnbreaker-trials", "detainState", { ...state, brkHitsTaken: hits });
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #4a9eff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🔨 <b>${golemActor.name}</b>'s grip weakens (${hits}/2 BRK hits).</div>` });
+    return;
+  }
+
+  const targetActor = game.actors.get(state.targetActorId);
+  if (targetActor) {
+    const dd = targetActor.getFlag("dawnbreaker-trials", "detainData") ?? { detainerTokenIds: [] };
+    for (const tId of dd.detainerTokenIds ?? []) {
+      const gToken = canvas.tokens?.placeables?.find(t => t.document.id === tId);
+      if (gToken?.actor) await gToken.actor.unsetFlag("dawnbreaker-trials", "detainState");
+    }
+    await targetActor.unsetFlag("dawnbreaker-trials", "detainData");
+    const clearedConditions = (targetActor.system.conditions ?? []).filter(c => c.name !== "Immovable" && c.name !== "Stun");
+    await targetActor.update({ "system.conditions": clearedConditions });
+  } else {
+    await golemActor.unsetFlag("dawnbreaker-trials", "detainState");
+  }
+
+  await ChatMessage.create({ content: `<div style="background:#1a2a10;border:2px solid #81c784;border-radius:4px;padding:10px 14px;font-family:sans-serif;font-size:15px;font-weight:900;color:#81c784;text-align:center;">🔓 ${golemActor.name}'s GRIP IS BROKEN — ${targetActor?.name ?? "the target"} is freed!</div>` });
+}
+
 async function _handleCrystalBurrowerBreakpoints(actor, oldAR, newAR) {
   if (!actor.name?.toLowerCase().includes("crystal burrower")) return;
   if (newAR !== 0 || oldAR === 0) return;
@@ -2447,11 +4492,109 @@ async function _handleCrystalBurrowerBreakpoints(actor, oldAR, newAR) {
   </div>` });
 }
 
+// ═══════════════════════════════════════════════════════════
+//  UNDO SYSTEM
+// ═══════════════════════════════════════════════════════════
+const UNDO_MAX = 20;
+const UNDO_FLAGS = ["bleedStacks","battlecrazeHits","moonGuardian","stoicDamage","lightAura","soulThread","hauntData","tailwindStacks","tetherBonus","tetherTarget","coverFireActive","enchantBonus","aimBonus","healingBeacon","gatheringStorm","blessingOfLight"];
+
+function _dbCaptureActorSnapshot(actor) {
+  const flags = {};
+  for (const f of UNDO_FLAGS) {
+    const v = actor.getFlag("dawnbreaker-trials", f);
+    if (v !== undefined) flags[f] = foundry.utils.deepClone(v);
+  }
+  return {
+    actorId:    actor.id,
+    name:       actor.name,
+    hp:         actor.system.hp?.current ?? 0,
+    ar:         actor.system.ar?.current ?? 0,
+    ki:         actor.system.ki?.current ?? 0,
+    conditions: foundry.utils.deepClone(actor.system.conditions ?? []),
+    flags,
+  };
+}
+
+function _dbPushUndo(description) {
+  if (!game.user.isGM) return;
+  const snapshots = game.actors.map(a => _dbCaptureActorSnapshot(a));
+  const stack = foundry.utils.deepClone(game.settings.get("dawnbreaker-trials", "undoStack") ?? []);
+  stack.push({ timestamp: Date.now(), description, snapshots });
+  if (stack.length > UNDO_MAX) stack.splice(0, stack.length - UNDO_MAX);
+  game.settings.set("dawnbreaker-trials", "undoStack", stack);
+}
+
+window._dbPushUndo = _dbPushUndo;
+
+window._dbUndo = async () => {
+  if (!game.user.isGM) { ui.notifications.warn("Only the GM can undo actions."); return; }
+  const stack = foundry.utils.deepClone(game.settings.get("dawnbreaker-trials", "undoStack") ?? []);
+  if (!stack.length) { ui.notifications.info("Nothing to undo."); return; }
+  const entry = stack.pop();
+  await game.settings.set("dawnbreaker-trials", "undoStack", stack);
+
+  const age = Math.round((Date.now() - entry.timestamp) / 1000);
+  const ageStr = age < 60 ? `${age}s ago` : `${Math.round(age/60)}m ago`;
+
+  let lines = [];
+  for (const snap of entry.snapshots) {
+    const actor = game.actors.get(snap.actorId);
+    if (!actor) continue;
+    const cur = _dbCaptureActorSnapshot(actor);
+    const updates = {};
+    const diffs = [];
+
+    if (cur.hp !== snap.hp) { updates["system.hp.current"] = snap.hp; diffs.push(`❤ HP ${cur.hp}→${snap.hp}`); }
+    if (cur.ar !== snap.ar) { updates["system.ar.current"] = snap.ar; diffs.push(`🛡 AR ${cur.ar}→${snap.ar}`); }
+    if (cur.ki !== snap.ki) { updates["system.ki.current"] = snap.ki; diffs.push(`✨ KI ${cur.ki}→${snap.ki}`); }
+
+    const condChanged = JSON.stringify(cur.conditions) !== JSON.stringify(snap.conditions);
+    if (condChanged) { updates["system.conditions"] = snap.conditions; diffs.push(`📋 Conditions restored`); }
+
+    if (Object.keys(updates).length) await actor.update(updates, { allowHealDown: true, cursedReflectionChecked: true });
+
+    for (const [f, v] of Object.entries(snap.flags)) {
+      if (JSON.stringify(cur.flags?.[f]) !== JSON.stringify(v)) {
+        await actor.setFlag("dawnbreaker-trials", f, v);
+        diffs.push(`🚩 ${f} restored`);
+      }
+    }
+    // Remove flags that didn't exist in snapshot
+    for (const f of UNDO_FLAGS) {
+      if (!(f in snap.flags) && cur.flags?.[f] !== undefined) {
+        await actor.unsetFlag("dawnbreaker-trials", f);
+      }
+    }
+
+    if (diffs.length) lines.push(`<b>${snap.name}</b>: ${diffs.join(", ")}`);
+  }
+
+  const body = lines.length
+    ? lines.map(l => `<div style="margin:2px 0;">${l}</div>`).join("")
+    : `<div style="color:#7a8090;">No actor state changes detected.</div>`;
+
+  ChatMessage.create({ content: `
+    <div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:4px;padding:8px 12px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">
+      <div style="color:#c8a84b;font-weight:700;font-size:13px;letter-spacing:1px;margin-bottom:6px;">↩ UNDO — ${entry.description} <span style="color:#5a6070;font-size:10px;">(${ageStr})</span></div>
+      <div style="color:#7a8090;font-size:10px;margin-bottom:4px;">${stack.length} action(s) remaining in undo history</div>
+      ${body}
+    </div>`, whisper: [game.user.id] });
+};
+
 window._dbApplyDamage = async (data) => {
   // Resolve token actor first — handles unlinked tokens correctly
   const tokenActor = canvas.tokens?.placeables?.find(t => t.actor?.id === data.actorId)?.actor;
   const actor = tokenActor ?? game.actors.get(data.actorId);
   if (!actor) return;
+
+  // Snapshot entire world state before this action (captures reactions/chains too)
+  if (!data._undoChild && game.user.isGM) {
+    const desc = data.type === "applyDamage"   ? `HP attack on ${actor.name}`
+               : data.type === "applyARDamage" ? `AR attack on ${actor.name}`
+               : `Action on ${actor.name}`;
+    _dbPushUndo(desc);
+  }
+
   if (data.type === "applyDamage") {
     const currentHP  = actor.system.hp?.current ?? 0;
     const rawDamage  = currentHP - data.newHP;
@@ -2469,8 +4612,7 @@ window._dbApplyDamage = async (data) => {
     }
 
     const reducedDmg = (!isTunnelAmbush && rawDamage > 0) ? await _checkGuardCondition(actor, rawDamage) : rawDamage;
-    const adjustedHP = Math.max(0, currentHP - reducedDmg);
-    let   finalDmg   = currentHP - adjustedHP;
+    let   finalDmg   = reducedDmg;
 
     // Apply assist damage reduction (min 1 still applies later)
     const assistBonus = window._getAssistBonus(actor);
@@ -2519,26 +4661,16 @@ window._dbApplyDamage = async (data) => {
       }
     }
 
-    // Shimmering Scales — if defender HP < 50% max, incoming damage reduced by 5 (passive)
-    if (moonDmg > 0) {
-      const hasScales = actor.items?.some(i => i.type === "ability" && i.name.toLowerCase().includes("shimmering scales"))
-        || Object.values(actor.system.abilities ?? {}).some(arr => Array.isArray(arr) && arr.some(a => a.name?.toLowerCase().includes("shimmering scales")));
-      if (hasScales) {
-        const scalesHP    = actor.system.hp?.current ?? 0;
-        const scalesHPMax = actor.system.hp?.max ?? scalesHP;
-        if (scalesHPMax > 0 && scalesHP / scalesHPMax < 0.5) {
-          const before = moonDmg;
-          moonDmg = Math.max(1, moonDmg - 5);
-          if (moonDmg < before) await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:4px;padding:4px 10px;font-family:sans-serif;font-size:11px;color:#d4d8e0;">✨ <b>Shimmering Scales</b> — ${actor.name} reduces incoming damage by 5 (HP below 50%)</div>` });
-        }
-      }
-    }
+    // Shimmering Scales — handled via Shimmer condition (+5 PR/MR) applied by updateActor hook
+
+    // HP attacks always deal at least 1 damage, even after all reductions
+    if (rawDamage > 0 && moonDmg === 0) moonDmg = 1;
 
     const newHP = Math.max(0, currentHP - moonDmg);
     await actor.update({ "system.hp.current": newHP });
     if (newHP <= 0) {
       await CastQueue.cancelForActor(actor.id, "was downed");
-      await _applyDownCondition(actor);
+      await _applyDownCondition(actor, { suppressChat: true });
     }
 
     // Stoic Stance — track HP damage taken
@@ -2671,10 +4803,7 @@ window._dbApplyDamage = async (data) => {
     // Light Aura — cancel if caster takes HP damage
     if (reactionDmg > 0 && game.user.isGM) {
       const laData = actor.getFlag("dawnbreaker-trials", "lightAura");
-      if (laData?.active) {
-        await actor.unsetFlag("dawnbreaker-trials", "lightAura");
-        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">✨ <b>Light Aura</b> — ${actor.name} took damage. Light Aura cancelled!</div>` });
-      }
+      if (laData?.active) await _cancelLightAura(actor, "took damage");
     }
 
   } else if (data.type === "applyARDamage") {
@@ -2701,6 +4830,7 @@ window._dbApplyDamage = async (data) => {
     const actualARDmg = currentAR - reactionAR;
     await actor.update({ "system.ar.current": reactionAR });
     await _handleCrystalBurrowerBreakpoints(actor, currentAR, reactionAR);
+    await _checkGolemGripBreak(actor, actualARDmg);
 
     // Stoic Stance — track AR damage taken
     const stoicDataAR = actor.getFlag("dawnbreaker-trials", "stoicDamage");
@@ -2745,6 +4875,107 @@ window._getStoicBonus = async function(actor, consume = false, damageType = null
 // ═══════════════════════════════════════════════════════════
 //  CAST QUEUE
 // ═══════════════════════════════════════════════════════════
+// ── Light Aura helpers ────────────────────────────────────────
+async function _applyLightAuraGlow(tokenId) {
+  if (!game.user.isGM || !tokenId) return;
+  const token = canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === tokenId);
+  if (!token) return;
+  const glowProps = {
+    "light.bright": 2,
+    "light.dim":    7,
+    "light.color":  "#c8a820",
+    "light.alpha":  0.45,
+    "light.animation.type":      "emanation",
+    "light.animation.speed":     2,
+    "light.animation.intensity": 3,
+  };
+  await token.document.update(glowProps);
+  // Save to prototype so V14 re-syncs preserve the glow
+  if (token.actor) {
+    await token.actor.update({
+      "prototypeToken.light.bright": 2,
+      "prototypeToken.light.dim":    7,
+      "prototypeToken.light.color":  "#c8a820",
+      "prototypeToken.light.alpha":  0.45,
+      "prototypeToken.light.animation.type":      "emanation",
+      "prototypeToken.light.animation.speed":     2,
+      "prototypeToken.light.animation.intensity": 3,
+    });
+  }
+}
+
+async function _lightAuraUpdateAllyConditions(casterActor, casterTokenId, bonus) {
+  if (!game.user.isGM) return;
+  const casterToken = canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === casterTokenId);
+  if (!casterToken) return;
+  const gridS = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+  const cx = Math.round(casterToken.document.x / gridS);
+  const cy = Math.round(casterToken.document.y / gridS);
+  const casterDisp = casterToken.document.disposition;
+  for (const tok of canvas.tokens.placeables) {
+    const a = tok.actor;
+    if (!a || a.id === casterActor.id) continue;
+    if (tok.document.disposition !== casterDisp) continue; // allies only
+    const tx = Math.round(tok.document.x / gridS);
+    const ty = Math.round(tok.document.y / gridS);
+    const dist = Math.abs(tx - cx) + Math.abs(ty - cy);
+    const inRange = dist <= 5;
+    const hasAura = (a.system.conditions ?? []).some(c => c.label === "aura");
+    if (inRange && !hasAura) {
+      const conds = [...(a.system.conditions ?? [])];
+      conds.push({ name: "Aura", label: "aura", duration: 0, instance: 0, effect: `pr_mr:${bonus}` });
+      await a.update({ "system.conditions": conds });
+    } else if (!inRange && hasAura) {
+      const conds = (a.system.conditions ?? []).filter(c => c.label !== "aura");
+      await a.update({ "system.conditions": conds });
+    }
+  }
+}
+
+async function _cancelLightAura(actor, reason = "deactivated") {
+  if (!game.user.isGM) return;
+  const flag = actor.getFlag?.("dawnbreaker-trials", "lightAura");
+
+  // Remove light and Sequencer animation from the scene token
+  if (flag?.tokenId) {
+    const token = canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === flag.tokenId);
+    if (token) {
+      await token.document.update({
+        "light.bright": 0, "light.dim": 0,
+        "light.color": "#000000", "light.alpha": 0,
+        "light.animation": { type: "none" },
+      });
+      if (window.Sequencer) {
+        Sequencer.EffectManager.endEffects({ name: "dbt-light-aura" });
+      }
+    }
+  }
+
+  // Remove Light Aura condition from caster
+  const cleaned = (actor.system.conditions ?? []).filter(c => c.label !== "lightaura");
+  await actor.update({ "system.conditions": cleaned });
+
+  // Unset flag
+  await actor.unsetFlag("dawnbreaker-trials", "lightAura");
+
+  // Strip AURA condition from all allied tokens
+  for (const tok of canvas.tokens.placeables) {
+    const a = tok.actor;
+    if (!a || a.id === actor.id) continue;
+    const hasCond = (a.system.conditions ?? []).some(c => c.label === "aura");
+    if (!hasCond) continue;
+    const stripped = (a.system.conditions).filter(c => c.label !== "aura");
+    await a.update({ "system.conditions": stripped });
+  }
+
+  const msgs = { "took damage": "took damage — Light Aura broken!", "ran out of KI": "ran out of KI — Light Aura faded!", "deactivated": "deactivated their Light Aura." };
+  await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">✨ <b>Light Aura</b> — ${actor.name} ${msgs[reason] ?? reason}</div>` });
+}
+
+window._applyLightAuraGlow            = _applyLightAuraGlow;
+window._cancelLightAura               = _cancelLightAura;
+window._lightAuraUpdateAllyConditions = _lightAuraUpdateAllyConditions;
+
 const CastQueue = {
   SETTING: "castQueueState",
   getQueue() { try { return game.settings.get("dawnbreaker-trials", CastQueue.SETTING) ?? []; } catch(e) { return []; } },
@@ -2753,10 +4984,42 @@ const CastQueue = {
     game.socket.emit("system.dawnbreaker-trials", { type: "castQueueUpdate", queue });
   },
   async queue({ actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound }) {
+    if (!game.user.isGM) {
+      game.socket.emit("system.dawnbreaker-trials", { type: "castQueueAdd", actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound });
+      return;
+    }
     const queue = CastQueue.getQueue();
+    const casterForWIL = game.actors.get(actorId);
+
+    // ── Cursed Reflection check — must pass WIL DC 10 before queuing ──
+    const hasCR = (casterForWIL?.system.conditions ?? []).some(c =>
+      c.name?.toLowerCase() === "cursed reflection" || c.label?.toLowerCase() === "cursed reflection"
+    );
+    if (hasCR) {
+      const DC = 10;
+      const wilMod = casterForWIL.type === "npc"
+        ? (casterForWIL.system.stats?.WIL ?? 0)
+        : (casterForWIL.system.stats?.WIL?.mod ?? 0);
+      const roll = await new Roll("1d20 + @v", { v: wilMod }).evaluate();
+      await roll.toMessage({
+        speaker: ChatMessage.getSpeaker({ actor: casterForWIL }),
+        flavor: `<b>${casterForWIL.name}</b> — Cursed Reflection WIL Check (DC ${DC})`,
+        rollMode: "publicroll",
+      });
+      if (roll.total < DC) {
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">✕ <b>Cursed Reflection</b> blocks <b>${casterForWIL.name}</b>'s cast of <b>${abilityName}</b>! (${roll.total} < ${DC})</div>` });
+        return null;
+      }
+      await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #2ecc71;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">✔ <b>${casterForWIL.name}</b> resists <b>Cursed Reflection</b> and begins casting <b>${abilityName}</b>! (${roll.total} ≥ ${DC})</div>` });
+    }
+
+    const wilVal = casterForWIL?.type === "npc"
+      ? (casterForWIL.system.stats?.WIL ?? 0)
+      : (casterForWIL?.system.stats?.WIL?.total ?? 0);
+    const effectiveCastSpeed = castSpeed + wilVal;
     const entry = {
       id: foundry.utils.randomID(), actorId, targetId, abilityName,
-      abilityIcon: abilityIcon ?? "⚡", castSpeed, apCurrent: 0, apTotal: castSpeed,
+      abilityIcon: abilityIcon ?? "⚡", castSpeed: effectiveCastSpeed, apCurrent: 0, apTotal: effectiveCastSpeed,
       attackType: attackType ?? "physical", formula: formula ?? "",
       apCost: apCost ?? 0, kiCost: kiCost ?? 0,
       targetX: targetX ?? null, targetY: targetY ?? null,
@@ -2769,7 +5032,7 @@ const CastQueue = {
     if (casterToken) await casterToken.document.update({ "texture.ring.colors.ring": "#00aaff" });
     const caster = game.actors.get(actorId);
     const target = game.actors.get(targetId);
-    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #00aaff;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#64d4ff;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #3a3f4a;padding-bottom:5px;margin-bottom:8px;">⚡ ${abilityIcon} ${abilityName} — Casting</div><table style="width:100%;font-size:12px;border-collapse:collapse;"><tr><td style="color:#7a8090;padding:2px 4px;">Caster</td><td style="text-align:right;">${caster?.name ?? "Unknown"}</td></tr><tr><td style="color:#7a8090;padding:2px 4px;">Target</td><td style="text-align:right;">${target?.name ?? "Unknown"}</td></tr><tr><td style="color:#7a8090;padding:2px 4px;">Cast Speed</td><td style="text-align:right;color:#64d4ff;">${castSpeed} AP / tick</td></tr></table></div>` });
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #00aaff;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#64d4ff;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #3a3f4a;padding-bottom:5px;margin-bottom:8px;">⚡ ${abilityIcon} ${abilityName} — Casting</div><table style="width:100%;font-size:12px;border-collapse:collapse;"><tr><td style="color:#7a8090;padding:2px 4px;">Caster</td><td style="text-align:right;">${casterForWIL?.name ?? "Unknown"}</td></tr><tr><td style="color:#7a8090;padding:2px 4px;">Target</td><td style="text-align:right;">${target?.name ?? "Unknown"}</td></tr><tr><td style="color:#7a8090;padding:2px 4px;">Base Cast Speed</td><td style="text-align:right;color:#64d4ff;">${castSpeed} AP / tick</td></tr><tr><td style="color:#a080ff;padding:2px 4px;">WIL Bonus</td><td style="text-align:right;color:#a080ff;">+${wilVal}</td></tr><tr style="border-top:1px solid #3a3f4a;"><td style="color:#d4d8e0;padding:3px 4px;font-weight:700;">Cast Speed</td><td style="text-align:right;color:#64d4ff;font-weight:700;">${effectiveCastSpeed} AP / tick</td></tr></table></div>` });
     CTBDisplay.refresh();
     return entry;
   },
@@ -2853,6 +5116,53 @@ const CastQueue = {
         if (token) await window._playHitAnimation(token, entry.animFile, entry.animScale ?? 1.0, entry.animSound ?? "", casterToken2);
       }
     }
+
+    // ── Named buff ability resolution ──────────────────────────────────────
+    if (entry.attackType === "buff" && caster) {
+      if (entry.abilityName === "Light Aura") {
+        try {
+          const spr    = caster.system.stats?.SPR?.total ?? 0;
+          const sprMod = Math.floor(spr / 3) - 3;
+          const bonus  = Math.max(0, 5 + sprMod);
+          // Find the specific caster token
+          const casterToken = canvas.tokens.placeables.find(t => t.actor?.id === caster.id);
+          const tokenId = casterToken?.document?.id ?? null;
+          const origLight = {
+            bright: casterToken?.document.light?.bright ?? 0,
+            dim:    casterToken?.document.light?.dim    ?? 0,
+            color:  casterToken?.document.light?.color  ?? "#000000",
+            alpha:  casterToken?.document.light?.alpha  ?? 0.5,
+          };
+          // Apply condition to caster and store flag — all actor writes first
+          const existConds = [...(caster.system.conditions ?? [])].filter(c => c.label !== "lightaura");
+          existConds.push({ name: "Light Aura", label: "lightaura", duration: 0, instance: 0, effect: `pr_mr:${bonus}` });
+          await caster.update({ "system.conditions": existConds });
+          await caster.setFlag("dawnbreaker-trials", "lightAura", { active: true, prMRBonus: bonus, tokenId, origLight, skipFirstKI: true });
+          // Give AURA condition to allies
+          await _lightAuraUpdateAllyConditions(caster, tokenId, bonus);
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#a080ff;border-bottom:1px solid #3a3f4a;padding-bottom:4px;margin-bottom:8px;">✨ Light Aura — ${caster.name}</div><div style="font-size:12px;">Allies within <b>5 tiles</b> gain <span style="color:#a080ff;font-weight:700;">PR/MR +${bonus}</span> and restore <b>+1 HP and +1 AR</b> at the start of their turn.</div><div style="font-size:11px;color:#7a8090;margin-top:4px;">Costs 1 KI per turn. Cancelled if ${caster.name} takes damage.</div></div>` });
+          // Apply glow + Sequencer last, after all actor writes settle
+          if (casterToken) {
+            await new Promise(r => setTimeout(r, 300));
+            await _applyLightAuraGlow(tokenId);
+            if (window.Sequence) {
+              const gridPx = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+              const auraScale = ((11 * gridPx) / 200) * 0.15;
+              await new Sequence()
+                .effect()
+                  .file("jb2a.template_circle.aura.04.inward.001.loop")
+                  .atLocation(casterToken)
+                  .scale(auraScale)
+                  .opacity(0.35)
+                  .persist()
+                  .name("dbt-light-aura")
+                  .attachTo(casterToken)
+                .play();
+            }
+          }
+        } catch(e) {}
+      }
+    }
   },
   async cancelForActor(actorId, reason) {
     const queue = CastQueue.getQueue();
@@ -2895,6 +5205,66 @@ const CTB = {
     atTurn.sort((a, b) => (b.apCurrent + b.apTotal * minTicks) - (a.apCurrent + a.apTotal * minTicks));
     return { atTurn, minTicks };
   },
+};
+
+// ═══════════════════════════════════════════════════════════
+//  CUTSCENE VIEWER — full-screen thematic image overlay
+// ═══════════════════════════════════════════════════════════
+class CutsceneViewer extends foundry.appv1.api.Application {
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: "db-cutscene-viewer",
+      template: "systems/dawnbreaker-trials/templates/cutscene-viewer.html",
+      popOut: false,
+      classes: ["db-cutscene-overlay"],
+    });
+  }
+  constructor(data = {}, options = {}) {
+    super(options);
+    this._data = data;
+  }
+  getData() {
+    return { img: this._data.img ?? "", caption: this._data.caption ?? "" };
+  }
+  activateListeners(html) {
+    super.activateListeners(html);
+    html.find(".db-cutscene-backdrop").click((ev) => {
+      if (ev.target === ev.currentTarget) CutsceneViewer.dismiss();
+    });
+    html.find(".db-cutscene-dismiss").click(() => CutsceneViewer.dismiss());
+    this._escHandler = (ev) => { if (ev.key === "Escape") CutsceneViewer.dismiss(); };
+    document.addEventListener("keydown", this._escHandler);
+  }
+  async close(options = {}) {
+    if (this._escHandler) document.removeEventListener("keydown", this._escHandler);
+    if (CutsceneViewer._current === this) CutsceneViewer._current = null;
+    return super.close(options);
+  }
+  static dismiss() {
+    if (CutsceneViewer._current) CutsceneViewer._current.close();
+  }
+  static show(data = {}) {
+    if (CutsceneViewer._current) CutsceneViewer._current.close();
+    const app = new CutsceneViewer(data);
+    CutsceneViewer._current = app;
+    app.render(true);
+    if (data.sound) (foundry.audio?.AudioHelper ?? AudioHelper).play({ src: data.sound, volume: 1, autoplay: true, loop: false }, true);
+    return app;
+  }
+  static hide() {
+    if (CutsceneViewer._current) CutsceneViewer._current.close();
+  }
+}
+CutsceneViewer._current = null;
+
+window._showCutscene = function(imgPath, options = {}) {
+  const data = { img: imgPath, caption: options.caption ?? "", sound: options.sound ?? "" };
+  if (game.user.isGM) game.socket.emit("system.dawnbreaker-trials", { type: "cutsceneShow", ...data });
+  CutsceneViewer.show(data);
+};
+window._endCutscene = function() {
+  if (game.user.isGM) game.socket.emit("system.dawnbreaker-trials", { type: "cutsceneHide" });
+  CutsceneViewer.hide();
 };
 
 class CTBDisplay extends foundry.appv1.api.Application {
@@ -2949,13 +5319,20 @@ class CTBDisplay extends foundry.appv1.api.Application {
     html.find(".ctb-remove-combatant").click(async (ev) => {
       if (!game.user.isGM) return;
       const actorId = ev.currentTarget.dataset.actorId;
+      const tokenId = ev.currentTarget.dataset.tokenId;
       const state   = CTB.getState();
       if (!state.combatants) return;
-      const combatant  = state.combatants.find(c => c.actorId === actorId);
-      const combatants = state.combatants.filter(c => c.actorId !== actorId);
+      const combatant  = tokenId
+        ? state.combatants.find(c => c.tokenId === tokenId)
+        : state.combatants.find(c => c.actorId === actorId);
+      const combatants = tokenId
+        ? state.combatants.filter(c => c.tokenId !== tokenId)
+        : state.combatants.filter(c => c.actorId !== actorId);
       await CTB.setState({ ...state, combatants });
       // Clear highlight
-      const token = canvas.tokens.placeables.find(t => t.actor?.id === actorId);
+      const token = tokenId
+        ? canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === tokenId)
+        : canvas.tokens.placeables.find(t => t.actor?.id === actorId);
       if (token) await _highlightToken(token, false);
       await _clearMovementRange();
       ui.notifications.info(`${combatant?.name ?? "Combatant"} removed from combat.`);
@@ -2971,8 +5348,8 @@ class CTBDisplay extends foundry.appv1.api.Application {
       if (!actor) return;
       const state = CTB.getState();
       if (!state.combatants) { ui.notifications.warn("No active combat!"); return; }
-      // Check if already in combat
-      if (state.combatants.some(c => c.actorId === actor.id)) {
+      // Check if already in combat (match by tokenId so duplicate NPC tokens can each join)
+      if (state.combatants.some(c => c.tokenId === token.id)) {
         ui.notifications.warn(`${actor.name} is already in combat!`); return;
       }
       // Roll initiative
@@ -3006,13 +5383,9 @@ class CTBDisplay extends foundry.appv1.api.Application {
       CTBDisplay.refresh();
     });
   }
-  static getInstance() { return Object.values(ui.windows ?? {}).find(w => w.id === "ctb-display") ?? Object.values(foundry.applications.instances ?? {}).find(w => w.id === "ctb-display"); }
-  static async show() {
-    const existing = CTBDisplay.getInstance();
-    if (existing) { existing.render(true); return existing; }
-    const app = new CTBDisplay(); app.render(true); return app;
-  }
-  static refresh() { CTBDisplay.getInstance()?.render(false); }
+  static getInstance() { return null; }
+  static async show() {}
+  static refresh() {}
 }
 
 const CTBEngine = {
@@ -3023,11 +5396,13 @@ const CTBEngine = {
     const combatants = [];
     for (const tokenDoc of tokens) {
       const actor = tokenDoc.actor;
-      if (actor) await (canvas.tokens.placeables.find(t => t.document.id === tokenDoc.id)?.actor ?? actor).update({ "system.ctbAP": 0 });
+      if (!actor || actor.getFlag("dawnbreaker-trials", "nonCombatant")) continue;
+      await (canvas.tokens.placeables.find(t => t.document.id === tokenDoc.id)?.actor ?? actor).update({ "system.ctbAP": 0 });
     }
     for (const tokenDoc of tokens) {
       const actor = tokenDoc.actor;
       if (!actor) continue;
+      if (actor.getFlag("dawnbreaker-trials", "nonCombatant")) continue;
       let apCurrent = 0;
       if (actor.type === "npc") {
         const r = await new Roll("2d10").evaluate();
@@ -3080,17 +5455,47 @@ const CTBEngine = {
       if (actor) c.apCurrent = actor.system.ctbAP ?? c.apCurrent;
     }
     const alreadyActive = combatants.filter(c => c.apCurrent >= 100 && !c.turnDone);
-    if (alreadyActive.length) { await CTB.setState({ ...state, phase: "active", combatants }); CTBDisplay.refresh(); return; }
-    const result = CTB.getNextAtTurn(combatants);
-    if (!result?.atTurn?.length) return;
-    const { atTurn, minTicks } = result;
-    combatants = combatants.map(c => ({ ...c, apCurrent: Math.round(c.apCurrent + (c.apTotal * minTicks)) }));
+    if (alreadyActive.length) {
+      // Guard: only one actor should ever be at 100. If somehow multiple are, cap the extras at 99.
+      if (alreadyActive.length > 1) {
+        alreadyActive.sort((a, b) => b.apCurrent - a.apCurrent || b.apTotal - a.apTotal);
+        const winner = alreadyActive[0];
+        combatants = combatants.map(c => (c.apCurrent >= 100 && !c.turnDone && c.tokenId !== winner.tokenId) ? { ...c, apCurrent: 99 } : c);
+      }
+      await CTB.setState({ ...state, phase: "active", combatants }); CTBDisplay.refresh(); return;
+    }
+
+    // Fractional tick — advance AP until exactly one actor hits 100, no overshooting
+    const tickEligible = combatants.filter(c => !c.turnDone && (c.apTotal ?? 0) > 0 && c.apCurrent < 100);
+    if (!tickEligible.length) return;
+
+    // Sort to find single leader: smallest fraction-to-100, tiebreak by highest AP then highest tick gain
+    tickEligible.sort((a, b) => {
+      const fa = (100 - a.apCurrent) / a.apTotal;
+      const fb = (100 - b.apCurrent) / b.apTotal;
+      if (Math.abs(fa - fb) > 0.0001) return fa - fb;
+      if (b.apCurrent !== a.apCurrent) return b.apCurrent - a.apCurrent;
+      return b.apTotal - a.apTotal;
+    });
+    const leader      = tickEligible[0];
+    const minFraction = (100 - leader.apCurrent) / leader.apTotal;
+
+    // Apply proportional gain — leader lands exactly at 100, all others capped at 99
+    combatants = combatants.map(c => {
+      if (c.turnDone || (c.apTotal ?? 0) <= 0) return c;
+      if (c.tokenId === leader.tokenId) return { ...c, apCurrent: 100 };
+      return { ...c, apCurrent: Math.min(99, Math.floor(c.apCurrent + (c.apTotal * minFraction))) };
+    });
+
+    const leaderTokenId = leader.tokenId;
+    const atTurn        = combatants.filter(c => c.tokenId === leaderTokenId);
+    const minTicks      = minFraction; // pass fraction to CastQueue.tickAll (it uses as multiplier)
     for (const c of combatants) {
       const token = canvas.tokens.placeables.find(t => t.document?.id === c.tokenId || t.id === c.tokenId);
       const actor = token?.actor ?? game.actors.get(c.actorId);
       if (!actor) continue;
       try { await actor.update({ "system.ctbAP": c.apCurrent }); actor.sheet?.render(false); }
-      catch(e) { console.error(`CTB | Failed to update AP for ${c.name}:`, e); }
+      catch(e) {}
     }
     await CTB.setState({ ...state, phase: "active", combatants });
     const resolvedCasts = await CastQueue.tickAll(minTicks);
@@ -3114,7 +5519,7 @@ const CTBEngine = {
         if (actor.type === "character") {
           await actor.update({ "system.turnPhase.active": true, "system.turnPhase.moved": false, "system.turnPhase.acted": false, "system.turnPhase.startX": canvasToken?.document?.x ?? 0, "system.turnPhase.startY": canvasToken?.document?.y ?? 0 });
         }
-        await CTBEngine._onTurnStart(actor, combatants);
+        await CTBEngine._onTurnStart(actor, combatants, entry.tokenId);
       }
     }
     CTBDisplay.refresh();
@@ -3166,7 +5571,7 @@ const CTBEngine = {
     await _clearMovementRange();
     if (!stillActive.length) await CTBEngine.tick();
   },
-  async _onTurnStart(actor, combatants) {
+  async _onTurnStart(actor, combatants, callerTokenId = null) {
     // Healing Beacon — must check BEFORE conditions early return since beacon has no conditions
     const beaconData = actor.getFlag("dawnbreaker-trials", "healingBeacon");
     if (beaconData?.active) {
@@ -3180,8 +5585,9 @@ const CTBEngine = {
       const BEACON_RANGE = 7;
       const beaconDisp  = beaconToken?.document?.disposition ?? 1;
 
-      // Heal all friendly tokens within range 7
+      // Heal all friendly tokens within range 7 — skip Down actors
       const healed = [];
+      const ignored = [];
       const healedTokens = [];
       for (const t of canvas.tokens.placeables) {
         if (!t.actor || t.document.disposition !== beaconDisp) continue;
@@ -3189,13 +5595,15 @@ const CTBEngine = {
         const dist = Math.abs(Math.round(t.document.x/size) - Math.round(beaconToken.document.x/size))
                    + Math.abs(Math.round(t.document.y/size) - Math.round(beaconToken.document.y/size));
         if (dist > BEACON_RANGE) continue;
-        const tActor  = t.actor;
-        const curHP   = tActor.system.hp?.current ?? 0;
-        const maxHP   = tActor.system.hp?.max ?? curHP;
-        const curAR   = tActor.system.ar?.current ?? 0;
-        const maxAR   = tActor.system.ar?.max ?? curAR;
-        const newHP   = Math.min(maxHP, curHP + 2);
-        const newAR   = Math.min(maxAR, curAR + 1);
+        const tActor = t.actor;
+        const isDown = (tActor.system.conditions ?? []).some(c => c.name?.toLowerCase() === "down" || c.label === "down");
+        if (isDown) { ignored.push(tActor.name); continue; }
+        const curHP = tActor.system.hp?.current ?? 0;
+        const maxHP = tActor.system.hp?.max ?? curHP;
+        const curAR = tActor.system.ar?.current ?? 0;
+        const maxAR = tActor.system.ar?.max ?? curAR;
+        const newHP = Math.min(maxHP, curHP + 2);
+        const newAR = Math.min(maxAR, curAR + 1);
         await tActor.update({ "system.hp.current": newHP, "system.ar.current": newAR });
         healed.push(`${tActor.name} (+2 HP, +1 AR)`);
         healedTokens.push(t);
@@ -3211,6 +5619,7 @@ const CTBEngine = {
       await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #81c784;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;">
         <div style="font-size:13px;font-weight:700;color:#81c784;border-bottom:1px solid #3a3f4a;padding-bottom:4px;margin-bottom:8px;">💊 Healing Beacon — Turn ${turnsUsed}/3</div>
         ${healed.length ? `<div style="font-size:12px;">Healed: ${healed.join(", ")}</div>` : `<div style="font-size:12px;color:#7a8090;">No allies in range.</div>`}
+        ${ignored.length ? `<div style="font-size:11px;color:#e05555;margin-top:4px;">☠ Ignored (Down): ${ignored.join(", ")}</div>` : ""}
         ${turnsUsed >= 3 ? `<div style="font-size:11px;color:#e05555;margin-top:4px;">⚠ Beacon self-destructing!</div>` : ""}
       </div>` });
 
@@ -3267,14 +5676,16 @@ const CTBEngine = {
     const conditions = foundry.utils.deepClone(actor.system.conditions ?? []);
     if (!conditions.length) return;
     const expired  = [];
-    const remaining = conditions.map(c => {
-      // Skip instance-based conditions (duration = 0, instance > 0) — they expire on hit not on turn
-      if ((c.duration === 0 || c.duration === null) && (c.instance > 0)) return c;
-      return { ...c, duration: (c.duration ?? 0) - 1 };
-    }).filter(c => {
-      if ((c.duration ?? 0) <= 0 && !(c.instance > 0)) { expired.push(c); return false; }
-      return true;
-    });
+    const remaining = [];
+    for (const c of conditions) {
+      // Permanent: duration 0/null AND instance 0 — never expires
+      if (!(c.duration > 0) && !(c.instance > 0)) { remaining.push(c); continue; }
+      // Instance-based: expires on hit, not on turn
+      if (!(c.duration > 0) && (c.instance > 0)) { remaining.push(c); continue; }
+      // Turn-based: decrement and expire when it reaches 0
+      const newDur = (c.duration ?? 0) - 1;
+      if (newDur <= 0) { expired.push(c); } else { remaining.push({ ...c, duration: newDur }); }
+    }
     await actor.update({ "system.conditions": remaining });
     for (const c of expired) { if (c.label) await _applyStatusEffect(actor, c.label, false); }
     if (expired.length) {
@@ -3285,8 +5696,8 @@ const CTBEngine = {
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;text-align:center;">☠ <b style="color:#e05555;">${actor.name}</b> has been <span style="color:#e05555;font-weight:700;">removed from combat</span> — Down timer elapsed.</div>` });
         const state = CTB.getState();
         if (state.combatants) {
-          const downActorToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
-          const downTokenId    = downActorToken?.document?.id ?? downActorToken?.id;
+          const downActorToken = canvas.tokens.placeables.find(t => t.document?.id === callerTokenId || t.id === callerTokenId || t.actor?.id === actor.id);
+          const downTokenId    = callerTokenId ?? downActorToken?.document?.id ?? downActorToken?.id;
           const newCombatants  = downTokenId
             ? state.combatants.filter(c => c.tokenId !== downTokenId)
             : state.combatants.filter(c => c.actorId !== actor.id);
@@ -3365,46 +5776,64 @@ const CTBEngine = {
       await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🎯 <b>Aim</b> — ${actor.name}'s Aim bonus has expired.</div>` });
     }
 
-    // Light Aura — deduct 1 KI at start of caster's turn, cancel if KI reaches 0
+    // Light Aura — caster's turn: deduct 1 KI, re-apply glow, heal allies, refresh AURA conditions
     const laData = actor.getFlag("dawnbreaker-trials", "lightAura");
-    if (laData?.active) {
-      const curKI = actor.system.ki?.current ?? 0;
-      if (curKI <= 0) {
-        await actor.unsetFlag("dawnbreaker-trials", "lightAura");
-        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">✨ <b>Light Aura</b> — ${actor.name} ran out of KI. Light Aura cancelled!</div>` });
+    if (laData?.active && game.user.isGM) {
+      if (laData.skipFirstKI) {
+        await actor.setFlag("dawnbreaker-trials", "lightAura", { ...laData, skipFirstKI: false });
       } else {
-        await actor.update({ "system.ki.current": curKI - 1 });
-        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">✨ <b>Light Aura</b> — ${actor.name} maintains the aura. KI: ${curKI} → ${curKI - 1}</div>` });
+        const curKI = actor.system.ki?.current ?? 0;
+        if (curKI <= 0) {
+          await _cancelLightAura(actor, "ran out of KI");
+        } else {
+          await actor.update({ "system.ki.current": curKI - 1 });
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">✨ <b>Light Aura</b> — ${actor.name} maintains the aura. KI: ${curKI} → ${curKI - 1}</div>` });
+          // Re-apply glow (Crystal Fungus style) in case it was wiped
+          if (laData.tokenId) {
+            const laTok = canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === laData.tokenId);
+            if (laTok) await laTok.document.update({ "light.bright": 2, "light.dim": 7, "light.color": "#c8a820", "light.alpha": 0.45, "light.animation": { type: "emanation", speed: 2, intensity: 3 } });
+          }
+          // Refresh which allies are in range and heal them
+          await _lightAuraUpdateAllyConditions(actor, laData.tokenId, laData.prMRBonus ?? 0);
+          const casterTok = canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === laData.tokenId);
+          const gridSla = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+          const cx2 = casterTok ? Math.round(casterTok.document.x / gridSla) : null;
+          const cy2 = casterTok ? Math.round(casterTok.document.y / gridSla) : null;
+          for (const tok of canvas.tokens.placeables) {
+            const a2 = tok.actor;
+            if (!a2 || a2.id === actor.id) continue;
+            if (tok.document.disposition !== casterTok?.document?.disposition) continue;
+            if (cx2 !== null) {
+              const d2 = Math.abs(Math.round(tok.document.x / gridSla) - cx2) + Math.abs(Math.round(tok.document.y / gridSla) - cy2);
+              if (d2 > 5) continue;
+            }
+            const curHP2 = a2.system.hp?.current ?? 0, maxHP2 = a2.system.hp?.max ?? curHP2;
+            const curAR2 = a2.system.ar?.current ?? 0, maxAR2 = a2.system.ar?.max ?? curAR2;
+            const healHP = curHP2 < maxHP2, healAR = curAR2 < maxAR2;
+            const upd = {};
+            if (healHP) upd["system.hp.current"] = Math.min(maxHP2, curHP2 + 1);
+            if (healAR) upd["system.ar.current"] = Math.min(maxAR2, curAR2 + 1);
+            if (healHP || healAR) {
+              await a2.update(upd);
+              await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:4px 10px;font-family:sans-serif;font-size:11px;color:#d4d8e0;">✨ <b>Light Aura</b> — ${a2.name}${healHP ? " ❤ +1 HP" : ""}${healAR ? " 🛡 +1 AR" : ""}</div>` });
+            }
+          }
+        }
       }
     }
 
-    // Light Aura — apply PR/MR bonus and heal to this actor if any ally has Light Aura active
+    // Light Aura — if this actor has the AURA condition but no allied caster is active, strip it
     if (game.user.isGM) {
-      const myToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
-      const myDisp  = myToken?.document?.disposition ?? 1;
-      for (const laToken of canvas.tokens.placeables) {
-        if (!laToken.actor || laToken.actor.id === actor.id) continue;
-        if (laToken.document.disposition !== myDisp) continue;
-        const laFlag = laToken.actor.getFlag("dawnbreaker-trials", "lightAura");
-        if (!laFlag?.active) continue;
-        // Check this actor is in range (reach 6)
-        const size3 = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
-        const dist3 = Math.abs(Math.round(laToken.document.x/size3) - Math.round(myToken?.document?.x/size3))
-                    + Math.abs(Math.round(laToken.document.y/size3) - Math.round(myToken?.document?.y/size3));
-        if (dist3 > 6) continue;
-        // Heal 1 HP or 1 AR (HP first, then AR if HP is full)
-        const curHP2  = actor.system.hp?.current ?? 0;
-        const maxHP2  = actor.system.hp?.max ?? curHP2;
-        const curAR2  = actor.system.ar?.current ?? 0;
-        const maxAR2  = actor.system.ar?.max ?? curAR2;
-        if (curHP2 < maxHP2) {
-          await actor.update({ "system.hp.current": Math.min(maxHP2, curHP2 + 1) });
-          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:4px 10px;font-family:sans-serif;font-size:11px;color:#d4d8e0;">✨ <b>Light Aura</b> — ${actor.name} ❤ +1 HP</div>` });
-        } else if (curAR2 < maxAR2) {
-          await actor.update({ "system.ar.current": Math.min(maxAR2, curAR2 + 1) });
-          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:4px 10px;font-family:sans-serif;font-size:11px;color:#d4d8e0;">✨ <b>Light Aura</b> — ${actor.name} 🛡 +1 AR</div>` });
+      const hasAuraCond = (actor.system.conditions ?? []).some(c => c.label === "aura");
+      if (hasAuraCond) {
+        const anyActiveCaster = canvas.tokens.placeables.some(t => {
+          if (!t.actor || t.actor.id === actor.id) return false;
+          return t.actor.getFlag("dawnbreaker-trials", "lightAura")?.active;
+        });
+        if (!anyActiveCaster) {
+          const stripped = (actor.system.conditions ?? []).filter(c => c.label !== "aura");
+          await actor.update({ "system.conditions": stripped });
         }
-        break; // only one aura per actor
       }
     }
 
@@ -3474,13 +5903,14 @@ class TargetSelector extends foundry.appv1.api.Application {
     this._targetType  = options.targetType  ?? "enemy";
     this._onSelect    = options.onSelect    ?? null;
     this._attacker    = options.attacker    ?? null;
+    this._attackerToken = options.attackerToken ?? null;
     this._reach       = options.reach       ?? 99;
     this._range       = options.range       ?? 0;
     this._shape       = options.shape       ?? "circle";
     this._archingShot = options.archingShot ?? false;
   }
   static get defaultOptions() {
-    return foundry.utils.mergeObject(super.defaultOptions, { id: "db-target-selector", title: "Select Target", template: "systems/dawnbreaker-trials/templates/target-selector.html", width: 300, height: "auto", resizable: true, popOut: true, classes: ["db-target-selector"], left: 10, top: 60 });
+    return foundry.utils.mergeObject(super.defaultOptions, { id: "db-target-selector", title: "Select Target", template: "systems/dawnbreaker-trials/templates/target-selector.html", width: "auto", height: "auto", resizable: false, popOut: true, classes: ["db-target-selector"], left: 10, top: 60 });
   }
   async _render(force, options) {
     await super._render(force, options);
@@ -3494,7 +5924,18 @@ class TargetSelector extends foundry.appv1.api.Application {
   }
   _tileDistance(tokenA, tokenB) {
     const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
-    return Math.abs(Math.round(tokenA.document.x/size) - Math.round(tokenB.document.x/size)) + Math.abs(Math.round(tokenA.document.y/size) - Math.round(tokenB.document.y/size));
+    const ax = Math.round(tokenA.document.x / size);
+    const ay = Math.round(tokenA.document.y / size);
+    const wA = Math.max(1, Math.round(tokenA.document.width  ?? 1));
+    const hA = Math.max(1, Math.round(tokenA.document.height ?? 1));
+    const bx = Math.round(tokenB.document.x / size);
+    const by = Math.round(tokenB.document.y / size);
+    const wB = Math.max(1, Math.round(tokenB.document.width  ?? 1));
+    const hB = Math.max(1, Math.round(tokenB.document.height ?? 1));
+    // Minimum Manhattan distance between the two tile-rectangles
+    const dx = Math.max(0, bx - (ax + wA - 1), ax - (bx + wB - 1));
+    const dy = Math.max(0, by - (ay + hA - 1), ay - (by + hB - 1));
+    return dx + dy;
   }
   _getAoETiles(centerToken, attackerToken) {
     const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
@@ -3592,7 +6033,7 @@ class TargetSelector extends foundry.appv1.api.Application {
   _clearRangeHighlight() { canvas.interface?.grid?.clearHighlightLayer("crucible.range"); }
   getData() {
     const attacker = this._attacker, allTokens = canvas.tokens.placeables;
-    const attackerToken = allTokens.find(t => t.actor?.id === attacker?.id);
+    const attackerToken = this._attackerToken ?? allTokens.find(t => t.actor?.id === attacker?.id);
     const attackerDisp  = attackerToken?.document?.disposition ?? attacker?.prototypeToken?.disposition ?? 1;
 
     // Check if attacker is threatened — if so, only show the threatening actor as a target
@@ -3644,6 +6085,20 @@ class TargetSelector extends foundry.appv1.api.Application {
       if (attackerToken && this._tileDistance(attackerToken, token) > this._reach) { ui.notifications.warn(`Out of range!`); return; }
       const affectedTokens = this._getAffectedTokens(token, canvas.tokens.placeables);
       this._clearAoEPreview(); this._clearRangeHighlight();
+      // Face attacker toward selected target
+      if (attackerToken) {
+        const dx = token.document.x - attackerToken.document.x;
+        const dy = token.document.y - attackerToken.document.y;
+        const angleDeg = Math.atan2(dy, dx) * (180 / Math.PI); // −180..180, 0=East
+        // Snap to nearest cardinal: E=0, S=90, W=180, N=270 (About Face convention)
+        const cardinals = [0, 90, 180, 270];
+        const normalised = ((angleDeg % 360) + 360) % 360;
+        const facing = cardinals.reduce((best, c) => {
+          const diff = Math.abs(((normalised - c + 180 + 360) % 360) - 180);
+          return diff < Math.abs(((normalised - best + 180 + 360) % 360) - 180) ? c : best;
+        }, cardinals[0]);
+        await attackerToken.document.update({ "flags.about-face.direction": facing });
+      }
       if (this._onSelect) await this._onSelect(token, affectedTokens);
       this._skipResolve = true;
       await Application.prototype.close.call(this);
@@ -3655,9 +6110,17 @@ class TargetSelector extends foundry.appv1.api.Application {
     setTimeout(() => { canvas.interface?.grid?.clearHighlightLayer("crucible.movement"); this._showRangeHighlight(); console.log(`TargetSelector | Showing range highlight, reach=${this._reach}, attacker=${this._attacker?.name}`); }, 150);
   }
   async close(...args) { this._clearAoEPreview(); this._clearRangeHighlight(); return super.close(...args); }
-  static select({ abilityName, abilityDesc, abilityIcon, targetType, attacker, reach, range, shape }) {
+  static select({ abilityName, abilityDesc, abilityIcon, targetType, attacker, attackerToken, tokenDoc, reach, range, shape, archingShot }) {
     return new Promise((resolve) => {
-      const app = new TargetSelector({ abilityName, abilityDesc, abilityIcon, targetType: targetType ?? "enemy", attacker, reach: reach ?? 99, range: range ?? 0, shape: shape ?? "circle", onSelect: (token, affectedTokens) => resolve({ token, affectedTokens }) });
+      // Resolve the specific canvas token placeable for the attacker.
+      // Priority: explicit attackerToken → tokenDoc (TokenDocument from HUD scope) →
+      //   canvas.tokens.controlled[0] if it matches the attacker (handles duplicate NPC tokens for GMs) →
+      //   first token by actorId (fallback)
+      const controlled = canvas.tokens.controlled[0];
+      const resolvedAttackerToken = attackerToken
+        ?? (tokenDoc ? canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === tokenDoc?.id) : null)
+        ?? (controlled?.actor?.id === attacker?.id ? controlled : null);
+      const app = new TargetSelector({ abilityName, abilityDesc, abilityIcon, targetType: targetType ?? "enemy", attacker, attackerToken: resolvedAttackerToken, reach: reach ?? 99, range: range ?? 0, shape: shape ?? "circle", archingShot: archingShot ?? false, onSelect: (token, affectedTokens) => resolve({ token, affectedTokens }) });
       app.render(true);
       const origClose = app.close.bind(app);
       app.close = async (...args) => { if (!app._skipResolve) resolve(null); return origClose(...args); };
@@ -3734,19 +6197,989 @@ window._resolveThrow = async ({ thrower, targetActor, item, distance, hasThrowAb
 };
 
 // ═══════════════════════════════════════════════════════════
+//  ABILITY CHECK PANEL
+//  Floating panel for quick d20 + stat rolls.
+//  Toggled by the "Ability Check" macro.
+// ═══════════════════════════════════════════════════════════
+class AbilityCheckPanel extends foundry.appv1.api.Application {
+  static _instance = null;
+
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id:        "db-ability-check-panel",
+      title:     "Ability Checks",
+      width:     270,
+      height:    "auto",
+      resizable: false,
+      popOut:    true,
+      classes:   ["dawnbreaker", "db-ability-check-panel"],
+    });
+  }
+
+  static toggle() {
+    if (!AbilityCheckPanel._instance) AbilityCheckPanel._instance = new AbilityCheckPanel();
+    if (AbilityCheckPanel._instance.rendered) AbilityCheckPanel._instance.close();
+    else AbilityCheckPanel._instance.render(true);
+  }
+
+  static refresh() {
+    if (AbilityCheckPanel._instance?.rendered) AbilityCheckPanel._instance.render(false);
+  }
+
+  getData() {
+    const actor = canvas.tokens.controlled[0]?.actor ?? null;
+    if (!actor) return { actor: null };
+    const STATS = [
+      { key: "STR", label: "Strength"     },
+      { key: "CON", label: "Constitution" },
+      { key: "AGI", label: "Agility"      },
+      { key: "DEX", label: "Dexterity"    },
+      { key: "INT", label: "Intelligence" },
+      { key: "SPR", label: "Spirit"       },
+    ];
+    return {
+      actor,
+      actorName: actor.name,
+      actorImg:  actor.img,
+      stats: STATS.map(s => ({
+        key:   s.key,
+        label: s.label,
+        mod:   actor.type === "npc"
+          ? (actor.system.stats?.[s.key] ?? 0)
+          : (actor.system.stats?.[s.key]?.mod ?? 0),
+      })),
+    };
+  }
+
+  async _renderInner(data) {
+    let inner;
+    if (!data.actor) {
+      inner = `<div class="db-acp-empty">Select a token to roll ability checks.</div>`;
+    } else {
+      const rows = data.stats.map(s => `
+        <div class="db-acp-row" data-stat="${s.key}" title="${s.label} check (d20 ${s.mod >= 0 ? "+" : ""}${s.mod})">
+          <span class="db-acp-badge">${s.key}</span>
+          <span class="db-acp-stat-name">${s.label.toUpperCase()}.</span>
+          <span class="db-acp-mod">${s.mod >= 0 ? "+" : ""}${s.mod}</span>
+          <span class="db-acp-arrow">◆</span>
+        </div>`).join("");
+      inner = `
+        <div class="db-acp-header">
+          <img src="${data.actorImg}" class="db-acp-portrait"/>
+          <div class="db-acp-header-info">
+            <div class="db-acp-actor-name">${data.actorName.toUpperCase()}.</div>
+            <div class="db-acp-actor-sub">ABILITY CHECKS</div>
+          </div>
+        </div>
+        <div class="db-acp-rows">${rows}</div>`;
+    }
+    return $(`<div class="db-acp-body">${inner}</div>`);
+  }
+
+  activateListeners(html) {
+    super.activateListeners(html);
+    html.find(".db-acp-row").click(async (ev) => {
+      const stat  = ev.currentTarget.dataset.stat;
+      const actor = canvas.tokens.controlled[0]?.actor ?? null;
+      if (!actor) { ui.notifications.warn("Select a token first!"); return; }
+      const mod = actor.type === "npc"
+        ? (actor.system.stats?.[stat] ?? 0)
+        : (actor.system.stats?.[stat]?.mod ?? 0);
+      const LABELS = { STR:"Strength", CON:"Constitution", AGI:"Agility", DEX:"Dexterity", INT:"Intelligence", SPR:"Spirit" };
+      const roll = await new Roll("1d20 + @v", { v: mod }).evaluate();
+      await roll.toMessage({
+        speaker: ChatMessage.getSpeaker({ actor }),
+        flavor:  `<b>${actor.name}</b> — ${LABELS[stat] ?? stat} Check (${stat} MOD ${mod >= 0 ? "+" : ""}${mod})`,
+        rollMode: "publicroll",
+      });
+    });
+  }
+}
+
+window.AbilityCheckPanel = AbilityCheckPanel;
+Hooks.on("controlToken", () => AbilityCheckPanel.refresh());
+Hooks.on("updateActor",  () => AbilityCheckPanel.refresh());
+
+// ═══════════════════════════════════════════════════════════
+//  NAT 20 / CRITICAL FAIL CHAT BANNER
+// ═══════════════════════════════════════════════════════════
+Hooks.on("renderChatMessage", (message, html) => {
+  if (!message.rolls?.length) return;
+  const totalEl = html.find(".dice-total");
+  if (!totalEl.length) return;
+
+  let nat20 = false, nat1 = false;
+  for (const roll of message.rolls) {
+    for (const term of (roll.terms ?? [])) {
+      if (term.faces !== 20) continue;
+      for (const r of (term.results ?? [])) {
+        if (r.result === 20 && r.active !== false) nat20 = true;
+        if (r.result === 1  && r.active !== false) nat1  = true;
+      }
+    }
+  }
+
+  if (nat20) {
+    totalEl.addClass("db-nat20");
+    totalEl.html(`<span class="db-nat-label">CRITICAL SUCCESS</span>`);
+  } else if (nat1) {
+    totalEl.addClass("db-nat1");
+    totalEl.html(`<span class="db-nat-label">CRITICAL FAIL</span>`);
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════
+//  RARITY HELPERS
+// ═══════════════════════════════════════════════════════════
+const RARITY_ORDER = ["basic","rare","arcane","unique","legendary","ethereal"];
+
+function _rarityFromLevel(upgradeLevel) {
+  if (upgradeLevel <= 1) return "basic";
+  if (upgradeLevel <= 4) return "rare";
+  return "arcane";
+}
+
+function _rarityRollRange(rarity) {
+  return { basic:[1,2], rare:[2,4], arcane:[3,5], unique:[4,6], legendary:[5,7], ethereal:[6,8] }[rarity] ?? [1,2];
+}
+
+function _rarityColor(rarity) {
+  return { basic:"#8a8f9a", rare:"#4a9eff", arcane:"#9b59b6", unique:"#ff69b4", legendary:"#ff8c00", ethereal:"#ff3333" }[rarity] ?? "#8a8f9a";
+}
+
+function _rarityLabel(rarity) {
+  return (rarity ?? "basic").charAt(0).toUpperCase() + (rarity ?? "basic").slice(1);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  INVENTORY LOG
+// ═══════════════════════════════════════════════════════════
+const CRAFTING_JOURNAL_NAME = "Crafting Log";
+
+async function _craftingLogAdd(entry) {
+  if (!game.user.isGM) {
+    game.socket.emit("system.dawnbreaker-trials", { type: "craftingLogAdd", entry });
+    return;
+  }
+  const raw = game.settings.get("dawnbreaker-trials", "craftingLog") ?? "[]";
+  let log = [];
+  try { log = JSON.parse(raw); } catch(e) { log = []; }
+  entry.date = new Date().toISOString().slice(0,10);
+  log.unshift(entry);
+  if (log.length > 500) log = log.slice(0, 500);
+  await game.settings.set("dawnbreaker-trials", "craftingLog", JSON.stringify(log));
+  await _craftingJournalAppend(entry);
+}
+
+async function _craftingJournalAppend(entry) {
+  let journal = game.journal.getName(CRAFTING_JOURNAL_NAME);
+  if (!journal) journal = await JournalEntry.create({ name: CRAFTING_JOURNAL_NAME, ownership: { default: 0 } });
+  let page = journal.pages.contents[0];
+  const line = `[${entry.date}] ${entry.actorName} — ${entry.action.toUpperCase()} — ${entry.itemName} (${_rarityLabel(entry.rarity)}) — ${entry.detail}`;
+  if (!page) {
+    await journal.createEmbeddedDocuments("JournalEntryPage", [{ name: "Log", type: "text", text: { content: `<p>${line}</p>` } }]);
+  } else {
+    const existing = page.text?.content ?? "";
+    await page.update({ "text.content": `<p>${line}</p>${existing}` });
+  }
+}
+
+function _craftingLogGet() {
+  try { return JSON.parse(game.settings.get("dawnbreaker-trials", "craftingLog") ?? "[]"); }
+  catch(e) { return []; }
+}
+
+Hooks.on("preDeleteItem", (item, options) => {
+  const rarity = item.system?.rarity ?? "basic";
+  if (rarity === "basic") return true;
+  if (options._confirmedDelete) return true;
+  const color = _rarityColor(rarity);
+  const enhancements = item.getFlag("dawnbreaker-trials","enhancements") ?? [];
+  const enhLines = enhancements.map(e =>
+    `<li style="color:${color}">${(e.label ?? e.stat?.toUpperCase() ?? "?")} +${e.value}${e.essence ? ` [${e.essence}]` : ""}</li>`
+  ).join("");
+  const _dlg = new (foundry.appv1?.applications?.Dialog ?? Dialog)({
+    title: "DELETE ENHANCED ITEM",
+    content: `<div style="font-family:'Bebas Neue',monospace;padding:12px;">
+      <div style="font-size:22px;color:${color};margin-bottom:8px;">⚠ ${item.name}</div>
+      <div style="font-size:14px;color:#8a8f9a;margin-bottom:8px;">${_rarityLabel(rarity)} — Upgrade Level +${item.system?.upgradeLevel ?? 0}</div>
+      ${enhLines ? `<ul style="margin:8px 0;padding-left:16px;font-size:14px;">${enhLines}</ul>` : ""}
+      <div style="color:#c0392b;font-size:16px;margin-top:10px;">This item cannot be recovered. Are you sure?</div>
+    </div>`,
+    buttons: {
+      cancel: { label: "CANCEL", callback: () => {} },
+      confirm: {
+        label: `<span style="color:#c0392b;">DELETE</span>`,
+        callback: async () => {
+          options._confirmedDelete = true;
+          await item.delete(options);
+          _craftingLogAdd({ actorName: item.parent?.name ?? "Unknown", action: "delete", itemName: item.name, rarity, detail: `Deleted +${item.system?.upgradeLevel ?? 0} item` });
+        }
+      }
+    },
+    default: "cancel"
+  });
+  _dlg.render(true);
+  const _sheetEl = item.parent?.sheet?.element?.[0];
+  if (_sheetEl) { const _r = _sheetEl.getBoundingClientRect(); setTimeout(() => _dlg.setPosition({ left: _r.right + 10, top: _r.top }), 50); }
+  return false;
+});
+
+// ═══════════════════════════════════════════════════════════
+//  UPGRADE COST TABLES
+// ═══════════════════════════════════════════════════════════
+const UPGRADE_COSTS = [
+  { primary:3,  carmine:0, rune:0 },
+  { primary:5,  carmine:1, rune:0 },
+  { primary:8,  carmine:1, rune:0 },
+  { primary:13, carmine:2, rune:0 },
+  { primary:20, carmine:2, rune:1 },
+  { primary:32, carmine:3, rune:2 },
+  { primary:50, carmine:4, rune:3 },
+];
+const UPGRADE_COSTS_CHEST = [
+  { primary:4,  carmine:0, rune:0 },
+  { primary:7,  carmine:1, rune:0 },
+  { primary:11, carmine:1, rune:0 },
+  { primary:17, carmine:2, rune:0 },
+  { primary:26, carmine:2, rune:1 },
+  { primary:40, carmine:3, rune:2 },
+  { primary:62, carmine:4, rune:3 },
+];
+const UPGRADE_COSTS_MELEE2 = [
+  { primary:4,  carmine:0, rune:0 },
+  { primary:6,  carmine:1, rune:0 },
+  { primary:10, carmine:1, rune:0 },
+  { primary:16, carmine:2, rune:0 },
+  { primary:26, carmine:2, rune:1 },
+  { primary:42, carmine:3, rune:2 },
+  { primary:65, carmine:4, rune:3 },
+];
+
+function _getUpgradeCost(item, targetLevel) {
+  const is2H = item.system?.isTwoHanded ?? false;
+  if (is2H) return UPGRADE_COSTS_MELEE2[targetLevel - 1] ?? null;
+  const isChest = ["chest","body"].includes(item.system?.slot ?? item.system?.armorSlot ?? "");
+  if (isChest) return UPGRADE_COSTS_CHEST[targetLevel - 1] ?? null;
+  return UPGRADE_COSTS[targetLevel - 1] ?? null;
+}
+
+function _matFromPath(path) {
+  if (path === "fabric")  return "Fabric";
+  if (path === "leather") return "Leather";
+  if (path === "wood")    return "Wood";
+  if (path === "ore" || path === "melee2") return "Ore";
+  return null;
+}
+
+function _getPrimaryMaterial(item) {
+  const m = _matFromPath(item.system?.forgePath ?? "");
+  if (m) return m;
+  // Legacy fallback: guess from name/subtype
+  const gt = (item.system?.gearType ?? item.system?.subtype ?? item.name ?? "").toLowerCase();
+  if (gt.includes("cloth") || gt.includes("fabric") || gt.includes("robe") || gt.includes("hood")) return "Fabric";
+  if (gt.includes("leather")) return "Leather";
+  if (gt.includes("wood") || gt.includes("staff") || gt.includes("wooden") || gt.includes("bow")) return "Wood";
+  return "Ore";
+}
+
+function _getSecondaryMaterial(item) {
+  return _matFromPath(item.system?.forgePathSecondary ?? "") ?? null;
+}
+
+function _splitCost(total) {
+  const main = Math.round(total * 0.75);
+  return { main, secondary: total - main };
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ENHANCEMENT TABLES
+// ═══════════════════════════════════════════════════════════
+const WEAPON_ENHANCE_HIGH = ["str","agi","dex","int","spr"];
+const WEAPON_ENHANCE_LOW  = ["brk","for","cha","ass","wil","dam"];
+const ARMOR_ENHANCE_HIGH  = ["con","wil","for","mr","pr","ar","hp"];
+const ARMOR_ENHANCE_LOW   = ["brk","mv","ass","ki","ap","cha"];
+const ESSENCE_BIAS = {
+  fire:   ["str","brk","dam","for"],
+  water:  ["spr","wil","ki","mr","int"],
+  earth:  ["con","ar","for","hp"],
+  air:    ["agi","mv","dex","ap"],
+  spirit: ["cha","brk","mr","pr","ki"],
+};
+const ENHANCE_HIGH_WEIGHT = 3;
+const ENHANCE_LOW_WEIGHT  = 1;
+const ENHANCE_ESSENCE_BOOST_PCT = 0.02; // +2% chance per essence consumed, added to each related stat
+
+function _rollEnhancement(item, essenceType = null, essenceQty = 0) {
+  const rarity = item.system?.rarity ?? "basic";
+  const [minVal, maxVal] = _rarityRollRange(rarity);
+  const isWeapon = item.system?.isWeapon ?? (item.system?.itemType === "weapon");
+  const highPool = isWeapon ? WEAPON_ENHANCE_HIGH : ARMOR_ENHANCE_HIGH;
+  const lowPool  = isWeapon ? WEAPON_ENHANCE_LOW  : ARMOR_ENHANCE_LOW;
+  const allStats = [...highPool, ...lowPool];
+
+  const baseTotal = highPool.length * ENHANCE_HIGH_WEIGHT + lowPool.length * ENHANCE_LOW_WEIGHT;
+  const weights = {};
+  for (const s of highPool) weights[s] = ENHANCE_HIGH_WEIGHT / baseTotal;
+  for (const s of lowPool)  weights[s] = ENHANCE_LOW_WEIGHT  / baseTotal;
+
+  if (essenceType && essenceQty > 0 && ESSENCE_BIAS[essenceType]) {
+    const biased = ESSENCE_BIAS[essenceType].filter(s => allStats.includes(s));
+    for (const s of biased) weights[s] += ENHANCE_ESSENCE_BOOST_PCT * essenceQty;
+  }
+
+  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
+  let roll = Math.random() * totalWeight;
+  let stat = allStats[allStats.length - 1];
+  for (const s of allStats) {
+    roll -= weights[s];
+    if (roll <= 0) { stat = s; break; }
+  }
+
+  const value = minVal + Math.floor(Math.random() * (maxVal - minVal + 1));
+  return { stat, value, essence: essenceType ?? null, essenceQty: essenceType ? essenceQty : 0, label: stat.toUpperCase(), rerollCount: 0 };
+}
+
+function _getRerollCost(rarity, rerollCount) {
+  const base = { basic:1, rare:2, arcane:3, unique:4, legendary:5, ethereal:6 }[rarity] ?? 1;
+  return base + rerollCount;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ENHANCEMENT TABLES — REFERENCE JOURNAL (GM-editable copy)
+// ═══════════════════════════════════════════════════════════
+const ENHANCEMENT_TABLES_JOURNAL_NAME = "Enhancement Tables Reference";
+
+function _buildEnhancementTablesHTML() {
+  const rarityRows = RARITY_ORDER.map(r => {
+    const [lo, hi] = _rarityRollRange(r);
+    return `<tr><td style="color:${_rarityColor(r)};">${_rarityLabel(r)}</td><td>${lo}–${hi}</td><td>${_getRerollCost(r, 0)}</td></tr>`;
+  }).join("");
+
+  const upRows = (table) => table.map((row, i) =>
+    `<tr><td>+${i + 1}</td><td>${row.primary}</td><td>${row.carmine}</td><td>${row.rune}</td></tr>`
+  ).join("");
+
+  const essenceRows = Object.entries(ESSENCE_BIAS).map(([essence, stats]) =>
+    `<tr><td>${essence.charAt(0).toUpperCase() + essence.slice(1)}</td><td>${stats.join(", ").toUpperCase()}</td></tr>`
+  ).join("");
+
+  return `
+<p><em>This page is regenerated from the system code on world load. Edits here are for reference only and will be overwritten — to change these values, edit the tables in dawnbreaker.mjs (WEAPON_ENHANCE_HIGH/LOW, ARMOR_ENHANCE_HIGH/LOW, ESSENCE_BIAS, _rarityRollRange, UPGRADE_COSTS).</em></p>
+
+<h2>Enhancement Stat Pools</h2>
+<p><b>Weapon — high chance:</b> ${WEAPON_ENHANCE_HIGH.join(", ").toUpperCase()}<br/><b>Weapon — low chance:</b> ${WEAPON_ENHANCE_LOW.join(", ").toUpperCase()}</p>
+<p><b>Armor — high chance:</b> ${ARMOR_ENHANCE_HIGH.join(", ").toUpperCase()}<br/><b>Armor — low chance:</b> ${ARMOR_ENHANCE_LOW.join(", ").toUpperCase()}</p>
+<p><em>Base weighting: high chance stats are ${ENHANCE_HIGH_WEIGHT}x as likely as low chance stats within their pool.</em></p>
+
+<h2>Essence Bias (+${ENHANCE_ESSENCE_BOOST_PCT * 100}% chance per essence consumed, additive, to each related stat)</h2>
+<table><thead><tr><th>Essence</th><th>Biased Stats</th></tr></thead><tbody>${essenceRows}</tbody></table>
+
+<h2>Rarity — Roll Range &amp; Base Reroll Cost</h2>
+<table><thead><tr><th>Rarity</th><th>Roll Range</th><th>Base Carmine Cost</th></tr></thead><tbody>${rarityRows}</tbody></table>
+<p><em>Reroll cost = base cost + number of prior rerolls on that slot.</em></p>
+<p><em>Rarity is derived from upgrade level: level 0–1 = Basic, 2–4 = Rare, 5+ = Arcane.</em></p>
+
+<h2>Upgrade Costs — 1H Weapons / Armor</h2>
+<table><thead><tr><th>Level</th><th>Primary Mat.</th><th>Carmine Shard</th><th>Rune</th></tr></thead><tbody>${upRows(UPGRADE_COSTS)}</tbody></table>
+
+<h2>Upgrade Costs — 2H Melee Weapons</h2>
+<table><thead><tr><th>Level</th><th>Primary Mat.</th><th>Carmine Shard</th><th>Rune</th></tr></thead><tbody>${upRows(UPGRADE_COSTS_MELEE2)}</tbody></table>
+`.trim();
+}
+
+async function _ensureEnhancementTablesJournal() {
+  if (!game.user.isGM) return;
+  const html = _buildEnhancementTablesHTML();
+  let journal = game.journal.getName(ENHANCEMENT_TABLES_JOURNAL_NAME);
+  if (!journal) {
+    journal = await JournalEntry.create({
+      name: ENHANCEMENT_TABLES_JOURNAL_NAME,
+      pages: [{ name: "Tables", type: "text", text: { content: html } }],
+    });
+  } else {
+    const page = journal.pages.contents[0];
+    if (page) await page.update({ "text.content": html });
+    else await journal.createEmbeddedDocuments("JournalEntryPage", [{ name: "Tables", type: "text", text: { content: html } }]);
+  }
+}
+
+function _getShoeUpgradeBonuses(level) {
+  const t = { mv:0, ap:0, ar:0, hp:0 };
+  if (level >= 1) t.mv += 1;
+  if (level >= 2) t.ap += 1;
+  if (level >= 3) t.ar += 3;
+  if (level >= 4) t.mv += 1;
+  if (level >= 5) t.ap += 1;
+  if (level >= 6) t.hp += 5;
+  if (level >= 7) { t.ap += 1; t.mv += 1; }
+  return t;
+}
+
+// Growth helpers: 0.5 = floor(n/2), 1 = n, 1.5 = ceil(n*1.5), 2 = 2n, 3 = 3n
+function _grow(level, rate) {
+  if (rate === 0.5) return Math.floor(level / 2);
+  if (rate === 1.5) return Math.ceil(level * 1.5);
+  return Math.round(level * rate);
+}
+
+const BUILTIN_GROWTH_PATHS = [
+  { id: "builtin:ore:head",      name: "Base Plate Head",    slot: "head",  rates: { pr:1.5, mr:0.5, hp:2   }, base: { pr:2, mr:0, hp:1 } },
+  { id: "builtin:ore:chest",     name: "Base Plate Chest",   slot: "body",  rates: { pr:1.5, mr:0.5, ar:1.5 }, base: { pr:3, mr:1, ar:2 } },
+  { id: "builtin:ore:feet",      name: "Base Plate Feet",    slot: "legs",  rates: { pr:1.5, mr:0.5         }, base: { pr:2, mr:0 } },
+  { id: "builtin:leather:head",  name: "Base Leather Head",  slot: "head",  rates: { pr:1,   mr:1,   hp:2   }, base: { pr:1, mr:1, hp:1 } },
+  { id: "builtin:leather:chest", name: "Base Leather Chest", slot: "body",  rates: { pr:1,   mr:1,   ar:1   }, base: { pr:2, mr:2, ar:1 } },
+  { id: "builtin:leather:feet",  name: "Base Leather Feet",  slot: "legs",  rates: { pr:1,   mr:1            }, base: { pr:1, mr:1 } },
+  { id: "builtin:fabric:head",   name: "Base Cloth Head",    slot: "head",  rates: { mr:1.5, pr:0.5, hp:3   }, base: { mr:2, pr:0, hp:1 } },
+  { id: "builtin:fabric:chest",  name: "Base Cloth Chest",   slot: "body",  rates: { mr:1.5, pr:0.5, ar:0.5 }, base: { mr:3, pr:1, ar:0 } },
+  { id: "builtin:fabric:feet",   name: "Base Cloth Feet",    slot: "legs",  rates: { mr:1.5, pr:0.5         }, base: { mr:2, pr:0 } },
+];
+
+function _autoBuiltinPathId(forgePath, slot) {
+  const fp = forgePath === "melee2" ? "ore" : (forgePath || "ore");
+  const s = slot === "body" ? "chest" : slot === "legs" ? "feet" : slot;
+  return `builtin:${fp}:${s}`;
+}
+
+function _getGrowthPathRates(pathId, forgePath, slot) {
+  if (pathId) {
+    const b = BUILTIN_GROWTH_PATHS.find(p => p.id === pathId);
+    if (b) return b.rates;
+    try {
+      const customs = game?.settings?.get("dawnbreaker-trials", "growthPaths") ?? [];
+      const c = customs.find(p => p.id === pathId);
+      if (c) return c.rates;
+    } catch(e) {}
+  }
+  const autoId = _autoBuiltinPathId(forgePath, slot);
+  return BUILTIN_GROWTH_PATHS.find(p => p.id === autoId)?.rates ?? {};
+}
+
+function _formatGrowthRates(rates) {
+  return Object.entries(rates).filter(([,v]) => v).map(([k,v]) => `+${v}${k.toUpperCase()}/lvl`).join(" ");
+}
+
+// Returns cumulative PR/MR/HP/AR bonus from forge upgrades for armor (excluding base item stats)
+// Generic per-level growth from an explicit path id (used for weapon custom paths, no armor slot extras)
+function _getPathLevelGrowth(pathId, level) {
+  if (!level || !pathId) return {};
+  let path = BUILTIN_GROWTH_PATHS.find(p => p.id === pathId);
+  if (!path) {
+    try {
+      const customs = game?.settings?.get("dawnbreaker-trials", "growthPaths") ?? [];
+      path = customs.find(p => p.id === pathId);
+    } catch(e) {}
+  }
+  if (!path?.rates) return {};
+  const t = {};
+  for (const [k, v] of Object.entries(path.rates)) {
+    const bonus = _grow(level, v);
+    if (bonus) t[k] = bonus;
+  }
+  return t;
+}
+
+function _getArmorUpgradeBonuses(forgePath, slot, level, pathId = null) {
+  if (!level) return {};
+  const rates = _getGrowthPathRates(pathId, forgePath, slot);
+  const t = {};
+  for (const [k, v] of Object.entries(rates)) {
+    const bonus = _grow(level, v);
+    if (bonus) t[k] = (t[k] ?? 0) + bonus;
+  }
+  // All feet pieces also get the standard shoe table bonuses
+  if (slot === "feet" || slot === "legs") {
+    const shoe = _getShoeUpgradeBonuses(level);
+    for (const [k, v] of Object.entries(shoe)) t[k] = (t[k] ?? 0) + v;
+  }
+  return t;
+}
+
+// ── GROWTH PATH EDITOR ──────────────────────────────────────────────────────
+class GrowthPathEditor extends foundry.appv1.api.Application {
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: "db-growth-path-editor", title: "Custom Growth Paths", template: null,
+      width: 620, height: 480, resizable: true,
+    });
+  }
+
+  async getData() {
+    let customs = [];
+    try { customs = game.settings.get("dawnbreaker-trials", "growthPaths") ?? []; } catch(e) {}
+    return { builtins: BUILTIN_GROWTH_PATHS, customs };
+  }
+
+  async _renderInner(data) {
+    const statKeys = ["dam","pr","mr","hp","ar","mv","ap","str","con","agi","dex","int","spr","wil","for","cha","brk","ki","ass"];
+    const rateOpts = [0, 0.5, 1, 1.5, 2, 2.5, 3].map(v => `<option value="${v}">${v}</option>`).join("");
+
+    const builtinRows = data.builtins.map(p => {
+      const rStr = Object.entries(p.rates).filter(([,v])=>v).map(([k,v])=>`+${v} ${k.toUpperCase()}/lvl`).join(", ");
+      return `<tr class="db-gp-row db-gp-builtin"><td>${p.name}</td><td class="db-gp-rates">${rStr}</td><td><em style="color:#888">Built-in</em></td></tr>`;
+    }).join("");
+
+    const customRows = data.customs.map(p => {
+      const bStr = Object.entries(p.base ?? {}).filter(([,v])=>v).map(([k,v])=>`+${v}${k.toUpperCase()}`).join(" ") || "—";
+      const rStr = Object.entries(p.rates ?? {}).filter(([,v])=>v).map(([k,v])=>`+${v} ${k.toUpperCase()}/lvl`).join(", ") || "—";
+      return `<tr class="db-gp-row" data-id="${p.id}">
+        <td><span class="db-gp-name-display">${p.name}</span></td>
+        <td class="db-gp-rates" style="color:var(--db-gold);font-size:11px">${bStr}</td>
+        <td class="db-gp-rates"><span class="db-gp-rates-display">${rStr}</span></td>
+        <td>
+          <button type="button" class="db-gp-edit" data-id="${p.id}">Edit</button>
+          <button type="button" class="db-gp-delete" data-id="${p.id}">✕</button>
+        </td>
+      </tr>`;
+    }).join("");
+
+    const rateInputs = statKeys.map(k =>
+      `<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0">
+        <span style="width:28px;text-align:right;font-weight:bold;color:var(--db-gold)">${k.toUpperCase()}</span>
+        <select class="db-gp-rate-input" data-stat="${k}" style="width:52px;padding:2px">
+          ${[0,0.5,1,1.5,2,2.5,3].map(v=>`<option value="${v}">${v}</option>`).join("")}
+        </select>
+      </label>`
+    ).join("");
+
+    const baseInputs = statKeys.map(k =>
+      `<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 6px 2px 0">
+        <span style="width:28px;text-align:right;font-weight:bold;color:var(--db-gold)">${k.toUpperCase()}</span>
+        <input class="db-gp-base-input" data-stat="${k}" type="number" value="0" min="0" style="width:44px;padding:2px"/>
+      </label>`
+    ).join("");
+
+    const html = `<div class="dawnbreaker" style="padding:12px;display:flex;flex-direction:column;gap:10px;height:100%;box-sizing:border-box;overflow-y:auto">
+      <h3 style="margin:0;color:var(--db-gold)">Built-in Paths</h3>
+      <table class="db-gp-table" style="font-size:12px">
+        <thead><tr><th>Name</th><th>Growth</th><th></th></tr></thead>
+        <tbody>${builtinRows}</tbody>
+      </table>
+      <h3 style="margin:0;color:var(--db-gold)">Custom Paths</h3>
+      <table class="db-gp-table" style="font-size:12px">
+        <thead><tr><th>Name</th><th>Base</th><th>Growth</th><th></th></tr></thead>
+        <tbody id="db-gp-custom-rows">${customRows || '<tr><td colspan="4" style="color:#888;text-align:center">No custom paths yet</td></tr>'}</tbody>
+      </table>
+      <div id="db-gp-add-form" style="border:1px solid #444;border-radius:4px;padding:10px;display:none;flex-direction:column;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <label style="color:var(--db-gold);font-weight:bold">Name:</label>
+          <input id="db-gp-new-name" type="text" placeholder="e.g. Battlemage Chest" style="flex:1;padding:4px"/>
+          <input id="db-gp-new-id" type="hidden" value=""/>
+        </div>
+        <div style="color:var(--db-gold);font-size:11px;font-weight:bold;margin-bottom:2px">BASE STATS (level 0)</div>
+        <div style="display:flex;flex-wrap:wrap">${baseInputs}</div>
+        <div style="color:var(--db-gold);font-size:11px;font-weight:bold;margin-bottom:2px">GROWTH RATES (per level)</div>
+        <div style="display:flex;flex-wrap:wrap">${rateInputs}</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button type="button" id="db-gp-save-btn" style="padding:4px 14px">Save</button>
+          <button type="button" id="db-gp-cancel-btn" style="padding:4px 14px">Cancel</button>
+        </div>
+      </div>
+      <button type="button" id="db-gp-add-btn" style="align-self:flex-start;padding:4px 14px">+ Add Custom Path</button>
+    </div>`;
+
+    const el = document.createElement("div");
+    el.innerHTML = html;
+    return $(el.firstElementChild);
+  }
+
+  activateListeners(html) {
+    super.activateListeners(html);
+    const showForm = (path = null) => {
+      const form = html.find("#db-gp-add-form")[0];
+      form.style.display = "flex";
+      html.find("#db-gp-add-btn").hide();
+      html.find("#db-gp-new-name").val(path?.name ?? "");
+      html.find("#db-gp-new-id").val(path?.id ?? "");
+      html.find(".db-gp-rate-input").each(function() {
+        this.value = path?.rates?.[this.dataset.stat] ?? 0;
+      });
+      html.find(".db-gp-base-input").each(function() {
+        this.value = path?.base?.[this.dataset.stat] ?? 0;
+      });
+    };
+    html.find("#db-gp-add-btn").click(() => showForm());
+    html.find("#db-gp-cancel-btn").click(() => {
+      html.find("#db-gp-add-form")[0].style.display = "none";
+      html.find("#db-gp-add-btn").show();
+    });
+    html.find("#db-gp-save-btn").click(async () => {
+      const name = html.find("#db-gp-new-name").val().trim();
+      if (!name) return ui.notifications.warn("Path name required.");
+      const rates = {}, base = {};
+      html.find(".db-gp-rate-input").each(function() {
+        const v = parseFloat(this.value);
+        if (v) rates[this.dataset.stat] = v;
+      });
+      html.find(".db-gp-base-input").each(function() {
+        const v = parseInt(this.value) || 0;
+        if (v) base[this.dataset.stat] = v;
+      });
+      let customs = [];
+      try { customs = foundry.utils.deepClone(game.settings.get("dawnbreaker-trials", "growthPaths") ?? []); } catch(e) {}
+      const existingId = html.find("#db-gp-new-id").val();
+      if (existingId) {
+        const idx = customs.findIndex(p => p.id === existingId);
+        if (idx >= 0) customs[idx] = { id: existingId, name, rates, base };
+        else customs.push({ id: existingId, name, rates, base });
+      } else {
+        customs.push({ id: `custom:${Date.now()}`, name, rates, base });
+      }
+      await game.settings.set("dawnbreaker-trials", "growthPaths", customs);
+      this.render(true);
+    });
+    html.on("click", ".db-gp-edit", async (ev) => {
+      const id = ev.currentTarget.dataset.id;
+      let customs = [];
+      try { customs = game.settings.get("dawnbreaker-trials", "growthPaths") ?? []; } catch(e) {}
+      const path = customs.find(p => p.id === id);
+      if (path) showForm(path);
+    });
+    html.on("click", ".db-gp-delete", async (ev) => {
+      const id = ev.currentTarget.dataset.id;
+      let customs = [];
+      try { customs = foundry.utils.deepClone(game.settings.get("dawnbreaker-trials", "growthPaths") ?? []); } catch(e) {}
+      await game.settings.set("dawnbreaker-trials", "growthPaths", customs.filter(p => p.id !== id));
+      this.render(true);
+    });
+  }
+}
+window._openGrowthPathEditor = () => new GrowthPathEditor().render(true);
+
+async function _applyEnhancements(item) {
+  // Bonuses are now calculated live in prepareData — nothing to write here.
+  // Kept as a stub so existing forge/enhance callers don't error.
+}
+
+function _craftingField(name) {
+  const n = name.toLowerCase();
+  if (n.includes("ephi"))    return "ephi";
+  if (n.includes("amynti"))  return "amynti";
+  if (n.includes("carmine")) return "carmine";
+  if (n.includes("fire"))    return "essenceFire";
+  if (n.includes("water"))   return "essenceWater";
+  if (n.includes("earth"))   return "essenceEarth";
+  if (n.includes("air"))     return "essenceAir";
+  if (n.includes("spirit"))  return "essenceSpirit";
+  if (n.includes("rune"))    return "runes";
+  if (n.includes("leather")) return "leather";
+  if (n.includes("fabric"))  return "fabric";
+  if (n.includes("wood"))    return "wood";
+  if (n.includes("scrap"))   return "scrap";
+  if (n.includes("ration"))  return "rations";
+  if (n.includes("ore"))     return "ore";
+  return null;
+}
+
+function _craftingQty(actor, name) {
+  const field = _craftingField(name);
+  return field ? (actor.system?.crafting?.[field] ?? 0) : 0;
+}
+
+async function _consumeStoredMaterial(actor, materialName, qty) {
+  const field = _craftingField(materialName);
+  if (!field) return;
+  const current = actor.system?.crafting?.[field] ?? 0;
+  await actor.update({ [`system.crafting.${field}`]: Math.max(0, current - qty) });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  BLACKSMITH APPLICATION
+// ═══════════════════════════════════════════════════════════
+class DawnbreakerBlacksmithApp extends foundry.appv1.api.Application {
+  constructor(actor, options = {}) { super(options); this.actor = actor; this._selectedItemId = null; }
+
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: "db-blacksmith", classes: ["dawnbreaker","db-smith-app"],
+      template: "systems/dawnbreaker-trials/templates/blacksmith.html",
+      title: "BLACKSMITH",
+      width: Math.round(window.innerWidth * 0.7),
+      height: Math.round(window.innerHeight * 0.75),
+      resizable: false,
+    });
+  }
+
+  get title() { return `BLACKSMITH — ${this.actor?.name ?? ""}`; }
+
+  getData() {
+    const actor = this.actor;
+    const items = actor.items.filter(i =>
+      ["weapon","armor","offhand"].includes(i.system?.itemType ?? "") || ["weapon","armor"].includes(i.type)
+    );
+    const upgradeableItems = items.map(item => {
+      const level = item.system?.upgradeLevel ?? 0;
+      const rarity = item.system?.rarity ?? "basic";
+      return { id:item.id, name:item.name, img:item.img, level, rarity, rarityLabel:_rarityLabel(rarity), rarityColor:_rarityColor(rarity), isSelected:item.id===this._selectedItemId, atMax:level>=7 };
+    });
+
+    let selectedItem = null, costRows = [], canAfford = false, slotRows = [];
+    if (this._selectedItemId) {
+      const item = actor.items.get(this._selectedItemId);
+      if (item) {
+        const level = item.system?.upgradeLevel ?? 0;
+        const rarity = item.system?.rarity ?? _rarityFromLevel(level);
+        const nextLevel = level + 1;
+        const cost = _getUpgradeCost(item, nextLevel);
+        const mat = _getPrimaryMaterial(item);
+        const _qty = (name) => _craftingQty(actor, name);
+        if (cost && level < 7) {
+          const hO = _qty(mat), hC = _qty("Carmine Shard"), hR = _qty("Rune");
+          costRows = [
+            { label:mat,             need:cost.primary, have:hO, canAfford:hO>=cost.primary },
+            { label:"Carmine Shard", need:cost.carmine, have:hC, canAfford:hC>=cost.carmine, skip:cost.carmine===0 },
+            { label:"Rune",          need:cost.rune,    have:hR, canAfford:hR>=cost.rune,    skip:cost.rune===0 },
+          ].filter(r => !r.skip);
+          canAfford = costRows.every(r => r.canAfford);
+        }
+        const enhancements = item.getFlag("dawnbreaker-trials","enhancements") ?? [];
+        const totalSlots = 1 + level;
+        const isWeapon = item.system?.isWeapon ?? (item.system?.itemType === "weapon");
+        slotRows = [{ slotIndex:0, isFixed:true, label:isWeapon?`DAM +${2+level}`:"FIXED", badge:"FIXED", type:"fixed" }];
+        for (let s = 1; s < totalSlots; s++) {
+          const enh = enhancements[s-1];
+          slotRows.push(enh
+            ? { slotIndex:s, isFixed:false, isFilled:true, label:`${enh.label??enh.stat?.toUpperCase()} +${enh.value}`, badge:enh.essence?enh.essence.toUpperCase():(isWeapon?"EPHI":"AMYNTI"), type:enh.essence?"elemental":"filled" }
+            : { slotIndex:s, isFixed:false, isFilled:false, isEmpty:true, label:"EMPTY", badge:"", type:"empty" }
+          );
+        }
+        selectedItem = { id:item.id, name:item.name, img:item.img, level, nextLevel, rarity, rarityLabel:_rarityLabel(rarity), rarityColor:_rarityColor(rarity), atMax:level>=7, nextRarity:level<7?_rarityLabel(_rarityFromLevel(nextLevel)):null, crossesRarityBoundary:level<7&&_rarityFromLevel(nextLevel)!==rarity };
+      }
+    }
+    return { actor, upgradeableItems, selectedItem, costRows, canAfford, slotRows };
+  }
+
+  activateListeners(html) {
+    super.activateListeners(html);
+    html.find(".db-smith-item-row").click(ev => { this._selectedItemId = ev.currentTarget.dataset.itemId; this.render(); });
+    html.find(".db-smith-forge-btn").click(async () => {
+      const item = this.actor.items.get(this._selectedItemId);
+      if (!item) return;
+      const level = item.system?.upgradeLevel ?? 0;
+      if (level >= 7) return;
+      const nextLevel = level + 1;
+      const cost = _getUpgradeCost(item, nextLevel);
+      const mat = _getPrimaryMaterial(item);
+      await _consumeStoredMaterial(this.actor, mat, cost.primary);
+      if (cost.carmine > 0) await _consumeStoredMaterial(this.actor, "Carmine Shard", cost.carmine);
+      if (cost.rune > 0)    await _consumeStoredMaterial(this.actor, "Rune", cost.rune);
+      const newRarity = _rarityFromLevel(nextLevel);
+      await item.update({ "system.upgradeLevel": nextLevel, "system.rarity": newRarity });
+      await _applyEnhancements(item);
+      _craftingLogAdd({ actorName:this.actor.name, action:"upgrade", itemName:item.name, rarity:newRarity, detail:`Upgraded to +${nextLevel} (${_rarityLabel(newRarity)}) — consumed ${cost.primary}x ${mat}${cost.carmine?`, ${cost.carmine}x Carmine`:""}${cost.rune?`, ${cost.rune}x Rune`:""}` });
+      ui.notifications.info(`${item.name} upgraded to +${nextLevel}!`);
+      this.render();
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SHARD ENHANCER APPLICATION
+// ═══════════════════════════════════════════════════════════
+class DawnbreakerEnhancerApp extends foundry.appv1.api.Application {
+  constructor(actor, options = {}) {
+    super(options);
+    this.actor = actor;
+    this._selectedItemId = null;
+    this._selectedSlot = null;
+    this._selectedEssence = null;
+    this._selectedEssenceQty = 1;
+    this._lastResult = null;
+  }
+
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: "db-enhancer", classes: ["dawnbreaker","db-enhance-app"],
+      template: "systems/dawnbreaker-trials/templates/enhancer.html",
+      title: "SHARD ENHANCER",
+      width: Math.round(window.innerWidth * 0.65),
+      height: Math.round(window.innerHeight * 0.7),
+      resizable: false,
+    });
+  }
+
+  get title() { return `SHARD ENHANCER — ${this.actor?.name ?? ""}`; }
+
+  getData() {
+    const actor = this.actor;
+    const enhanceable = actor.items.filter(i =>
+      ["weapon","armor","offhand"].includes(i.system?.itemType ?? "") || ["weapon","armor"].includes(i.type)
+    );
+    const _qty = (name) => _craftingQty(actor, name);
+    const itemList = enhanceable.map(item => {
+      const level = item.system?.upgradeLevel ?? 0;
+      const enhs = item.getFlag("dawnbreaker-trials","enhancements") ?? [];
+      return { id:item.id, name:item.name, img:item.img, level, rarity:item.system?.rarity??"basic", rarityLabel:_rarityLabel(item.system?.rarity??"basic"), rarityColor:_rarityColor(item.system?.rarity??"basic"), isSelected:item.id===this._selectedItemId, slotsLabel:`${enhs.length}/${level} SLOTS` };
+    });
+
+    let selectedItem = null, slotRows = [], canApply = false, rerollCost = 0;
+    const essenceOptions = [
+      { value:"",      label:"None (standard roll)" },
+      { value:"fire",  label:`Fire Essence (${_qty("Fire Essence")} owned)` },
+      { value:"water", label:`Water Essence (${_qty("Water Essence")} owned)` },
+      { value:"earth", label:`Earth Essence (${_qty("Earth Essence")} owned)` },
+      { value:"air",   label:`Air Essence (${_qty("Air Essence")} owned)` },
+      { value:"spirit",label:`Spirit Essence (${_qty("Spirit Essence")} owned)` },
+    ];
+
+    if (this._selectedItemId) {
+      const item = actor.items.get(this._selectedItemId);
+      if (item) {
+        const level = item.system?.upgradeLevel ?? 0;
+        const rarity = item.system?.rarity ?? "basic";
+        const enhancements = item.getFlag("dawnbreaker-trials","enhancements") ?? [];
+        const totalSlots = 1 + level;
+        const isWeapon = item.system?.isWeapon ?? (item.system?.itemType === "weapon");
+        slotRows = [{ slotIndex:0, isFixed:true, label:isWeapon?`DAM +${2+level}`:"FIXED", badge:"FIXED", type:"fixed" }];
+        for (let s = 1; s < totalSlots; s++) {
+          const enh = enhancements[s-1];
+          const rerolls = enh?.rerollCount ?? 0;
+          const rc = _getRerollCost(rarity, rerolls);
+          slotRows.push(enh
+            ? { slotIndex:s, isFixed:false, isFilled:true, label:`${enh.label??enh.stat?.toUpperCase()} +${enh.value}`, badge:enh.essence?enh.essence.toUpperCase():(isWeapon?"EPHI":"AMYNTI"), type:enh.essence?"elemental":"filled", canReroll:true, rerollCost:rc, rerollCount:rerolls, isSelected:this._selectedSlot===s }
+            : { slotIndex:s, isFixed:false, isFilled:false, isEmpty:true, label:"EMPTY", badge:"", type:"empty", isSelected:this._selectedSlot===s }
+          );
+        }
+        if (this._selectedSlot !== null) {
+          const sel = slotRows.find(r => r.slotIndex === this._selectedSlot);
+          if (sel?.isFilled) { rerollCost = sel.rerollCost; canApply = _qty("Carmine Shard") >= rerollCost; }
+          else if (sel?.isEmpty) { canApply = isWeapon ? _qty("Ephi Shard") > 0 : _qty("Amynti Shard") > 0; }
+        }
+        selectedItem = { id:item.id, name:item.name, img:item.img, level, rarity, rarityLabel:_rarityLabel(rarity), rarityColor:_rarityColor(rarity), isWeapon };
+      }
+    }
+    const essenceQtyOwned = this._selectedEssence ? _qty(`${this._selectedEssence.charAt(0).toUpperCase()}${this._selectedEssence.slice(1)} Essence`) : 0;
+    const selectedEssenceQty = this._selectedEssence ? Math.max(1, Math.min(this._selectedEssenceQty ?? 1, essenceQtyOwned || 1)) : 0;
+    if (this._selectedEssence && (selectedEssenceQty < 1 || selectedEssenceQty > essenceQtyOwned)) canApply = false;
+    return { actor, itemList, selectedItem, slotRows, essenceOptions, canApply, rerollCost, selectedSlot:this._selectedSlot, selectedEssence:this._selectedEssence, selectedEssenceQty, essenceQtyOwned, essenceBiasPct: selectedEssenceQty * ENHANCE_ESSENCE_BOOST_PCT * 100, lastResult:this._lastResult };
+  }
+
+  activateListeners(html) {
+    super.activateListeners(html);
+    html.find(".db-enhance-item-row").click(ev => { this._selectedItemId = ev.currentTarget.dataset.itemId; this._selectedSlot = null; this._lastResult = null; this.render(); });
+    html.find(".db-enh-slot-select").click(ev => { this._selectedSlot = parseInt(ev.currentTarget.dataset.slot); this.render(); });
+    html.find(".db-enhance-essence-select").change(ev => { this._selectedEssence = ev.currentTarget.value || null; this._selectedEssenceQty = 1; this.render(); });
+    html.find(".db-enhance-essence-qty").change(ev => { this._selectedEssenceQty = Math.max(1, parseInt(ev.currentTarget.value) || 1); this.render(); });
+    html.find(".db-enhance-apply-btn").click(async () => {
+      const item = this.actor.items.get(this._selectedItemId);
+      if (!item || this._selectedSlot === null) return;
+      const rarity = item.system?.rarity ?? "basic";
+      const isWeapon = item.system?.isWeapon ?? (item.system?.itemType === "weapon");
+      const enhancements = foundry.utils.deepClone(item.getFlag("dawnbreaker-trials","enhancements") ?? []);
+      const slotIdx = this._selectedSlot - 1;
+      const existing = enhancements[slotIdx];
+      const rerollCount = existing?.rerollCount ?? 0;
+      const _qty = (name) => _craftingQty(this.actor, name);
+      const essenceQty = this._selectedEssence ? Math.max(1, this._selectedEssenceQty ?? 1) : 0;
+
+      if (existing) {
+        const cost = _getRerollCost(rarity, rerollCount);
+        await _consumeStoredMaterial(this.actor, "Carmine Shard", cost);
+        if (this._selectedEssence) {
+          const en = this._selectedEssence.charAt(0).toUpperCase() + this._selectedEssence.slice(1);
+          await _consumeStoredMaterial(this.actor, `${en} Essence`, essenceQty);
+        }
+      } else {
+        await _consumeStoredMaterial(this.actor, isWeapon ? "Ephi Shard" : "Amynti Shard", 1);
+        if (this._selectedEssence) {
+          const en = this._selectedEssence.charAt(0).toUpperCase() + this._selectedEssence.slice(1);
+          await _consumeStoredMaterial(this.actor, `${en} Essence`, essenceQty);
+        }
+      }
+
+      const result = _rollEnhancement(item, this._selectedEssence, essenceQty);
+      result.rerollCount = existing ? rerollCount + 1 : 0;
+      enhancements[slotIdx] = result;
+      await item.setFlag("dawnbreaker-trials","enhancements", enhancements);
+      await _applyEnhancements(item);
+      _craftingLogAdd({ actorName:this.actor.name, action:existing?"reroll":"enhance", itemName:item.name, rarity, detail:`Slot ${this._selectedSlot}: ${result.label} +${result.value}${result.essence?` [${result.essence} x${essenceQty}]`:""}` });
+      this._lastResult = result;
+      this._selectedSlot = null;
+      this._selectedEssence = null;
+      this._selectedEssenceQty = 1;
+      this.render();
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  GM LOG VIEWER
+// ═══════════════════════════════════════════════════════════
+class DawnbreakerLogViewer extends foundry.appv1.api.Application {
+  constructor(options = {}) { super(options); this._filters = { actor:"", item:"", rarity:"", action:"" }; }
+
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: "db-log-viewer", classes: ["dawnbreaker","db-log-app"],
+      template: "systems/dawnbreaker-trials/templates/log-viewer.html",
+      title: "INVENTORY LOG", width: 860, height: 600, resizable: true,
+    });
+  }
+
+  getData() {
+    let log = _craftingLogGet();
+    const f = this._filters;
+    if (f.actor)  log = log.filter(e => e.actorName?.toLowerCase().includes(f.actor.toLowerCase()));
+    if (f.item)   log = log.filter(e => e.itemName?.toLowerCase().includes(f.item.toLowerCase()));
+    if (f.rarity) log = log.filter(e => e.rarity === f.rarity);
+    if (f.action) log = log.filter(e => e.action === f.action);
+    return {
+      log: log.map(e => ({ ...e, rarityColor:_rarityColor(e.rarity), rarityLabel:_rarityLabel(e.rarity) })),
+      filters:this._filters, isEmpty:log.length===0, rarities:RARITY_ORDER,
+      actions:["upgrade","enhance","reroll","delete","purchase","sell","equip","unequip"],
+    };
+  }
+
+  activateListeners(html) {
+    super.activateListeners(html);
+    html.find(".db-log-filter-input, .db-log-filter-select").on("input change", ev => {
+      this._filters[ev.currentTarget.dataset.filter] = ev.currentTarget.value;
+      this.render();
+    });
+    html.find(".db-log-clear-btn").click(() => { this._filters = { actor:"", item:"", rarity:"", action:"" }; this.render(); });
+  }
+}
+
+window.DawnbreakerBlacksmithApp = DawnbreakerBlacksmithApp;
+window.DawnbreakerEnhancerApp   = DawnbreakerEnhancerApp;
+window.DawnbreakerLogViewer     = DawnbreakerLogViewer;
+
+// ═══════════════════════════════════════════════════════════
 //  INIT HOOK
 // ═══════════════════════════════════════════════════════════
 Hooks.once("init", () => {
   console.log("Dawnbreaker Trials | Initialising system");
   CONFIG.sounds.dice = "";
+  delete CONFIG.ui.combat;
   window.CTB                 = CTB;
   window.CTBEngine           = CTBEngine;
   window.CTBDisplay          = CTBDisplay;
   window.TargetSelector      = TargetSelector;
   window.CastQueue           = CastQueue;
   window._showMovementRange  = _showMovementRange;
+  window._applyDownCondition = _applyDownCondition;
   window._clearMovementRange = _clearMovementRange;
   // _getAssistBonus already exported above DB_REACTIONS
+
+  // ── Journal enricher: @Cutscene[img|caption|sound]{Button Label} ──
+  CONFIG.TextEditor.enrichers.push({
+    id: "db-cutscene",
+    pattern: /@Cutscene\[([^\]]+)\](?:\{([^}]+)\})?/g,
+    enricher: async (match) => {
+      const parts   = match[1].split("|").map(s => s.trim());
+      const [img, caption = "", sound = ""] = parts;
+      const label = match[2] ?? "Play Cutscene";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "db-cutscene-trigger-btn";
+      btn.dataset.img = img ?? "";
+      btn.dataset.caption = caption;
+      btn.dataset.sound = sound;
+      btn.textContent = label;
+      return btn;
+    },
+  });
 
   CONFIG.statusEffects = [
     { id: "down",       label: "Down",       icon: "icons/svg/skull.svg"      },
@@ -3778,9 +7211,11 @@ Hooks.once("init", () => {
 
   Handlebars.registerHelper("addOne", (val) => val + 1);
   Handlebars.registerHelper("gte", (a, b) => a >= b);
+  Handlebars.registerHelper("eq", (a, b) => a === b);
 
   CONFIG.Actor.dataModels.character = DawnbreakerCharacterData;
   CONFIG.Actor.dataModels.npc       = DawnbreakerNPCData;
+  CONFIG.Actor.dataModels.companion = DawnbreakerCharacterData;
   CONFIG.Actor.documentClass        = DawnbreakerActor;
   CONFIG.Item.dataModels.weapon     = DawnbreakerItemData;
   CONFIG.Item.dataModels.armor      = DawnbreakerItemData;
@@ -3795,6 +7230,7 @@ Hooks.once("init", () => {
   try { foundry.applications.apps.DocumentSheetConfig.unregisterSheet(Item, "core", ItemSheet); } catch(e) {}
   foundry.applications.apps.DocumentSheetConfig.registerSheet(Actor, "dawnbreaker-trials", DawnbreakerActorSheet, { types: ["character"], makeDefault: true, label: "Dawnbreaker Character Sheet" });
   foundry.applications.apps.DocumentSheetConfig.registerSheet(Actor, "dawnbreaker-trials", DawnbreakerNPCSheet, { types: ["npc"], makeDefault: true, label: "Dawnbreaker NPC Sheet" });
+  foundry.applications.apps.DocumentSheetConfig.registerSheet(Actor, "dawnbreaker-trials", DawnbreakerCompanionSheet, { types: ["companion"], makeDefault: true, label: "Dawnbreaker Companion Sheet" });
   foundry.applications.apps.DocumentSheetConfig.registerSheet(Item, "dawnbreaker-trials", DawnbreakerItemSheet, { types: ["weapon","armor","offhand","consumable","common","special","craft"], makeDefault: true, label: "Dawnbreaker Item Sheet" });
   foundry.applications.apps.DocumentSheetConfig.registerSheet(Item, "dawnbreaker-trials", DawnbreakerAbilitySheet, { types: ["ability"], makeDefault: true, label: "Dawnbreaker Ability Sheet" });
   console.log("Dawnbreaker Trials | Sheets registered");
@@ -3803,25 +7239,51 @@ Hooks.once("init", () => {
 // ═══════════════════════════════════════════════════════════
 //  READY HOOK
 // ═══════════════════════════════════════════════════════════
+// Shared by every popup/window render: always stack one z-index above whatever
+// else is currently open, instead of any fixed/hardcoded z-index value.
+function _bumpZIndexAboveOthers(app, fallback = 10000) {
+  const el = app.element?.[0];
+  if (!el) return;
+  const openEls = Object.values(ui.windows ?? {})
+    .filter(w => w.rendered && w.id !== app.id)
+    .map(w => w.element?.[0])
+    .filter(Boolean);
+  const maxZ = openEls.reduce((max, e) => {
+    const z = parseInt(e.style.zIndex || window.getComputedStyle(e).zIndex, 10);
+    return Number.isFinite(z) ? Math.max(max, z) : max;
+  }, 0);
+  el.style.zIndex = String(maxZ > 0 ? maxZ + 1 : fallback);
+}
+
 Hooks.on("renderApplication", (app, html) => {
+  // Dialogs: anchor beside the rightmost currently-open window (unchanged behavior)
   const DialogClass = foundry.appv1?.applications?.Dialog ?? (typeof Dialog !== "undefined" ? Dialog : null);
-  if (!DialogClass || !(app instanceof DialogClass)) return;
-  // Find the rightmost rendered app to anchor dialogs beside
-  const openApps = Object.values(ui.windows ?? {}).filter(w => w.rendered && w.id !== app.id);
-  if (!openApps.length) return;
-  const rightmost = openApps.reduce((best, w) => {
-    const r = (w.position?.left ?? 0) + (w.position?.width ?? 0);
-    const b = (best.position?.left ?? 0) + (best.position?.width ?? 0);
-    return r > b ? w : best;
-  });
-  const { left, top, width } = rightmost.position ?? {};
-  if (left != null) app.setPosition({ left: left + width + 8, top });
+  if (DialogClass && app instanceof DialogClass) {
+    const openApps = Object.values(ui.windows ?? {}).filter(w => w.rendered && w.id !== app.id);
+    if (openApps.length) {
+      const rightmost = openApps.reduce((best, w) => {
+        const r = (w.position?.left ?? 0) + (w.position?.width ?? 0);
+        const b = (best.position?.left ?? 0) + (best.position?.width ?? 0);
+        return r > b ? w : best;
+      });
+      const { left, top, width } = rightmost.position ?? {};
+      if (left != null) app.setPosition({ left: left + width + 8, top });
+    }
+  }
+
+  // All windows/dialogs: always render one z-index above whatever else is open
+  _bumpZIndexAboveOthers(app);
 });
 
 Hooks.once("ready", () => {
   game.settings.register("dawnbreaker-trials", "ctbState", { scope: "world", config: false, type: Object, default: {} });
   game.settings.register("dawnbreaker-trials", "castQueueState", { scope: "world", config: false, type: Array, default: [] });
   game.settings.register("dawnbreaker-trials", "trapState", { scope: "world", config: false, type: Array, default: [] });
+  game.settings.register("dawnbreaker-trials", "undoStack", { scope: "world", config: false, type: Array, default: [] });
+  game.settings.register("dawnbreaker-trials", "craftingLog", { scope: "world", config: false, type: String, default: "[]" });
+  game.settings.register("dawnbreaker-trials", "growthPaths", { scope: "world", config: false, type: Array, default: [] });
+
+  _ensureEnhancementTablesJournal();
 
   game.socket.on("system.dawnbreaker-trials", async (data) => {
     const actor = data.actorId ? game.actors.get(data.actorId) : null;
@@ -3835,6 +7297,74 @@ Hooks.once("ready", () => {
       CTBDisplay.refresh();
       return;
     }
+
+    // ── Cutscene viewer — broadcast to ALL clients ──
+    if (data.type === "cutsceneShow") {
+      CutsceneViewer.show({ img: data.img, caption: data.caption, sound: data.sound });
+      return;
+    }
+    if (data.type === "cutsceneHide") {
+      CutsceneViewer.hide();
+      return;
+    }
+
+    // ── Cast queue add — players route through GM ──
+    if (data.type === "craftingLogAdd" && game.user.isGM) { await _craftingLogAdd(data.entry); return; }
+
+    if (data.type === "castQueueAdd" && game.user.isGM) {
+      await CastQueue.queue(data);
+      return;
+    }
+
+    // ── Light Aura manual cancel by player ──
+    if (data.type === "cancelLightAura" && game.user.isGM) {
+      const laActor = game.actors.get(data.actorId);
+      if (laActor) await _cancelLightAura(laActor, "deactivated");
+      return;
+    }
+
+    // ── Shop system ──
+    if (data.type === "itemTransfer" && game.user.isGM) {
+      await _processItemTransfer(data);
+      return;
+    }
+    if (data.type === "shopBuy" && game.user.isGM) {
+      await _processShopPurchase(data);
+      return;
+    }
+    if (data.type === "shopSell" && game.user.isGM) {
+      await _processShopSell(data);
+      return;
+    }
+    if (data.type === "shopStockUpdate") {
+      for (const app of Object.values(ui.windows ?? {})) {
+        if (app instanceof DawnbreakerShopApp && app.npcActorId === data.npcActorId) app.render(false);
+      }
+      return;
+    }
+    if (data.type === "shopTablesUpdate") {
+      for (const app of Object.values(ui.windows ?? {})) {
+        if (app instanceof DawnbreakerShopApp || app instanceof DawnbreakerShopTablesApp) app.render(false);
+      }
+      return;
+    }
+    if (data.type === "shopOpen" && game.user.isGM) {
+      await _handleShopOpen(data);
+      return;
+    }
+    if (data.type === "shopClose" && game.user.isGM) {
+      _handleShopClose(data);
+      return;
+    }
+    if (data.type === "shopPurchaseFailed") {
+      const buyer = game.actors.get(data.buyerActorId);
+      if (buyer?.isOwner) {
+        const msg = data.reason === "insufficient_credits" ? "Not enough Credits!" : "That item is out of stock.";
+        ui.notifications.warn(`🛒 ${msg}`);
+      }
+      return;
+    }
+
     if (data.type === "showMovementRange") {
       const token = canvas.tokens.placeables.find(t => t.document?.id === data.tokenId || t.id === data.tokenId);
       if (token) await _showMovementRange(token);
@@ -4138,6 +7668,72 @@ Hooks.once("ready", () => {
     }
   };
 
+  // ── E key — interact with nearest interactable NPC ──────────
+  window.addEventListener("keydown", async (ev) => {
+    if (ev.key !== "e" && ev.key !== "E") return;
+    // Ignore if focus is on any typeable element
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (document.activeElement?.isContentEditable) return;
+    if (document.activeElement?.closest(".ProseMirror, .editor-content, [contenteditable]")) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    ev.stopImmediatePropagation();
+
+    // Selected token is always the interacting party
+    const controlledToken = canvas?.tokens?.controlled?.[0];
+    const myActor = game.user.character ?? game.actors.find(a => a.isOwner && a.type === "character");
+    const buyerActor = controlledToken?.actor ?? myActor ?? null;
+    const sourceToken = controlledToken ?? canvas?.tokens?.placeables?.find(t => t.actor?.id === myActor?.id) ?? null;
+
+    if (!sourceToken && !game.user.isGM) {
+      ui.notifications.warn("You need a character token on the scene to interact.");
+      return;
+    }
+
+    // Find all interactable NPCs on the scene
+    const interactables = canvas.tokens.placeables.filter(t =>
+      t.actor?.getFlag("dawnbreaker-trials", "isInteractable") && t.actor?.id !== buyerActor?.id
+    );
+    if (!interactables.length) return;
+
+    // Pick the closest one
+    const gridSize = canvas.grid.size;
+    let nearest = null, nearestDist = Infinity;
+    for (const t of interactables) {
+      if (!sourceToken) { nearest = t; break; } // GM with no token — just open first one
+      const dx = Math.abs(t.document.x - sourceToken.document.x) / gridSize;
+      const dy = Math.abs(t.document.y - sourceToken.document.y) / gridSize;
+      const d  = Math.max(dx, dy);
+      if (d < nearestDist) { nearestDist = d; nearest = t; }
+    }
+    if (!nearest) return;
+
+    // Proximity check (skip for GM)
+    if (!game.user.isGM && nearestDist > 1.5) {
+      ui.notifications.warn(`${nearest.actor.name} is too far away to interact with.`);
+      return;
+    }
+
+    // Show SHOPPING label above player's token
+    if (sourceToken) {
+      const payload = { type: "shopOpen", tokenId: sourceToken.document.id };
+      if (game.user.isGM) await _handleShopOpen(payload);
+      else game.socket.emit("system.dawnbreaker-trials", payload);
+    }
+
+    _playGreetingSound(nearest.actor);
+    new DawnbreakerShopApp(nearest.actor.id, buyerActor?.id ?? null, {}, sourceToken?.document?.id ?? null).render(true);
+  }, { capture: true });
+
+  // Refresh open shop windows when the buyer's credits change
+  Hooks.on("updateActor", (actor, changes) => {
+    if (!foundry.utils.hasProperty(changes, "system.bio.credits")) return;
+    for (const app of Object.values(ui.windows ?? {})) {
+      if (app instanceof DawnbreakerShopApp && app.buyerActorId === actor.id) app.render(false);
+    }
+  });
+
   // Refresh CTB on resource changes
   Hooks.on("updateActor", async (actor, changes) => {
     if (!game.user.isGM) return;
@@ -4163,4 +7759,189 @@ Hooks.once("ready", () => {
       CTBDisplay.refresh();
     }
   });
+
+  // ── Journal cutscene trigger buttons ───────────────────────
+  document.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".db-cutscene-trigger-btn");
+    if (!btn) return;
+    ev.preventDefault();
+    if (!game.user.isGM) { ui.notifications.warn("Only the GM can trigger cutscenes."); return; }
+    const img     = btn.dataset.img;
+    const caption = btn.dataset.caption ?? "";
+    const sound   = btn.dataset.sound ?? "";
+    if (!img) { ui.notifications.warn("This cutscene button has no data-img set."); return; }
+    window._showCutscene(img, { caption, sound });
+  });
+
+  // ── Chat log: style + inline dice display ─────────────────
+  Hooks.on("renderChatMessage", _dbtStyleChatMessage);
+  Hooks.on("renderChatLog",     (app, html) => _dbtStyleChatLog(html));
+
+  // ── DBT-own dialogs only — Foundry native UI left untouched ──
+  _dbtInjectDialogStyles();
+
 });
+
+function _dbtStyleChatLog(html) {
+  const el = html instanceof jQuery ? html[0] : html;
+  // Walk up to find the actual scrollable chat container and style it
+  const log = el.querySelector?.("#chat-log") ?? (el.id === "chat-log" ? el : null);
+  if (!log) return;
+  Object.assign(log.style, {
+    background: "#07080c", border: "none", padding: "4px 0"
+  });
+}
+
+function _dbtStyleChatMessage(msg, html) {
+  const root = html instanceof jQuery ? html[0] : html;
+  if (!root) return;
+
+  // ── Message card ──
+  Object.assign(root.style, {
+    background: "#0d0f14",
+    border: "none",
+    borderLeft: "3px solid rgba(200,168,75,0.35)",
+    borderBottom: "1px solid rgba(255,255,255,0.04)",
+    borderRadius: "0",
+    margin: "0 0 3px",
+    padding: "6px 8px 6px 10px",
+    boxShadow: "none",
+  });
+
+  // ── Header ──
+  const header = root.querySelector(".message-header, header");
+  if (header) Object.assign(header.style, {
+    display: "flex", alignItems: "center", gap: "6px",
+    marginBottom: "4px", paddingBottom: "4px",
+    borderBottom: "1px solid rgba(255,255,255,0.05)",
+    background: "transparent",
+  });
+
+  // Sender name
+  const sender = root.querySelector(".message-sender, .name");
+  if (sender) Object.assign(sender.style, {
+    fontFamily: "'Bebas Neue', 'Arial Narrow', sans-serif",
+    fontSize: "13px", letterSpacing: "2px",
+    color: "#c8a84b", textTransform: "uppercase", flex: "1",
+  });
+
+  // Timestamp
+  const ts = root.querySelector(".message-timestamp, time");
+  if (ts) Object.assign(ts.style, {
+    fontFamily: "'Courier New', monospace",
+    fontSize: "9px", color: "rgba(255,255,255,0.2)", letterSpacing: "1px",
+  });
+
+  // Portrait
+  const img = root.querySelector(".message-header img");
+  if (img) Object.assign(img.style, {
+    width: "28px", height: "28px",
+    border: "1px solid rgba(200,168,75,0.4)", borderRadius: "0",
+    objectFit: "cover", flexShrink: "0",
+    clipPath: "polygon(0 0, 88% 0, 100% 12%, 100% 100%, 12% 100%, 0 88%)",
+  });
+
+  // ── Message content ──
+  const content = root.querySelector(".message-content");
+  if (content) Object.assign(content.style, {
+    fontSize: "12px", color: "#b0b8c8", lineHeight: "1.5",
+  });
+
+  // Flavor
+  const flavor = root.querySelector(".flavor-text, .flavor");
+  if (flavor) Object.assign(flavor.style, {
+    fontStyle: "italic", color: "rgba(200,168,75,0.6)",
+    fontSize: "11px", letterSpacing: "0.5px", marginBottom: "4px",
+  });
+
+  // ── Inline dice rewrite ──
+  _dbtRewriteDice(msg, root);
+}
+
+function _dbtRewriteDice(msg, root) {
+  if (!msg.rolls?.length) return;
+
+  // Remove existing dice-roll sections
+  root.querySelectorAll(".dice-roll").forEach(el => el.remove());
+
+  for (const roll of msg.rolls) {
+    // Build inline dice string: [d1, d2, d3] + modifiers = TOTAL
+    const diceGroups = [];
+    for (const term of (roll.terms ?? [])) {
+      if (term.results) {
+        // Die term — show each face value
+        const faces = term.results.map(r => {
+          const isMax = r.result === term.faces;
+          const isMin = r.result === 1;
+          const color = isMax ? "#2ecc71" : isMin ? "#e05555" : "#d4d8e0";
+          return `<span style="color:${color};font-weight:700">${r.result}</span>`;
+        });
+        diceGroups.push(`<span style="font-family:'Courier New',monospace;font-size:11px;color:#8090a8">${term.number}d${term.faces}[</span>${faces.join('<span style="color:#555">,</span>')}<span style="font-family:'Courier New',monospace;font-size:11px;color:#8090a8">]</span>`);
+      } else if (typeof term.operator === "string") {
+        diceGroups.push(`<span style="color:rgba(200,168,75,0.6);font-family:'Courier New',monospace">${term.operator}</span>`);
+      } else if (term.number !== undefined && !term.results) {
+        diceGroups.push(`<span style="color:#8090a8;font-family:'Courier New',monospace">${term.number}</span>`);
+      }
+    }
+
+    const total = roll.total;
+    const isNat20 = roll.terms?.[0]?.faces === 20 && roll.terms?.[0]?.results?.[0]?.result === 20;
+    const isNat1  = roll.terms?.[0]?.faces === 20 && roll.terms?.[0]?.results?.[0]?.result === 1;
+    const totalColor = isNat20 ? "#2ecc71" : isNat1 ? "#e05555" : "#e8c86a";
+    const totalGlow  = isNat20 ? "0 0 12px rgba(46,204,113,0.7)" : isNat1 ? "0 0 12px rgba(224,80,80,0.7)" : "0 0 10px rgba(200,168,75,0.5)";
+
+    const div = document.createElement("div");
+    div.style.cssText = `
+      background: rgba(0,0,0,0.4);
+      border: 1px solid rgba(200,168,75,0.15);
+      border-top: 2px solid rgba(200,168,75,0.5);
+      padding: 6px 8px; margin-top: 4px;
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    `;
+    div.innerHTML = `
+      ${diceGroups.join(" ")}
+      <span style="color:rgba(200,168,75,0.4);font-family:'Courier New',monospace;font-size:13px">=</span>
+      <span style="
+        font-family:'Bebas Neue',sans-serif; font-size:22px; letter-spacing:2px;
+        color:${totalColor}; text-shadow:${totalGlow};
+      ">${total}</span>
+    `;
+    const content = root.querySelector(".message-content");
+    if (content) content.appendChild(div);
+    else root.appendChild(div);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DIALOG / WINDOW STYLING
+// ═══════════════════════════════════════════════════════════
+
+function _dbtInjectDialogStyles() {
+  if (document.getElementById("dbt-dialog-styles")) return;
+  const style = document.createElement("style");
+  style.id = "dbt-dialog-styles";
+  style.textContent = `
+    /* ── DBT-own popups only (shop, ability check, etc.) ── */
+    .db-shop-app .window-header,
+    .db-ability-check-panel .window-header,
+    .db-shop-tables-app .window-header {
+      background: linear-gradient(90deg, rgba(200,168,75,0.12) 0%, transparent 60%) !important;
+      border-bottom: 2px solid rgba(200,168,75,0.4) !important;
+    }
+    /* ── Notifications only ── */
+    #notifications .notification {
+      background: #0d0f14 !important;
+      border-left: 3px solid rgba(200,168,75,0.6) !important;
+      border-radius: 0 !important;
+      color: #b0b8c8 !important;
+      font-family: 'Bebas Neue', 'Arial Narrow', sans-serif !important;
+      letter-spacing: 1px !important;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6) !important;
+    }
+    #notifications .notification.error   { border-left-color: rgba(192,57,43,0.9) !important; }
+    #notifications .notification.warning { border-left-color: rgba(230,126,34,0.9) !important; }
+    #notifications .notification.info    { border-left-color: rgba(52,152,219,0.9) !important; }
+  `;
+  document.head.appendChild(style);
+}
+

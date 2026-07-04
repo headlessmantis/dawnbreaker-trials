@@ -1,5 +1,5 @@
-{{!-- Dawnbreaker Trials — Character Sheet (Arknights-inspired layout) --}}
-<form class="dawnbreaker sheet ark-sheet" autocomplete="off">
+{{!-- Dawnbreaker Trials — Companion Sheet (pets/summons, primal layout) --}}
+<form class="dawnbreaker sheet ark-sheet companion-sheet" autocomplete="off">
 
   {{!-- ═══ LEFT PANEL: Portrait + Vitals ═══ --}}
   <div class="ark-left">
@@ -21,14 +21,13 @@
         </div>
       </div>
 
-      {{!-- Name + class tags --}}
+      {{!-- Name + type tag --}}
       <div class="ark-name-area">
         <h1 class="ark-charname">
           <input name="name" type="text" value="{{actor.name}}" placeholder="Name"/>
         </h1>
         <div class="ark-char-tags">
           {{#if system.bio.class}}<span class="ark-char-tag">{{system.bio.class}}</span>{{/if}}
-          {{#if system.bio.rank}}<span class="ark-char-tag ark-tag-rank">{{system.bio.rank}}</span>{{/if}}
         </div>
       </div>
 
@@ -76,7 +75,7 @@
   {{!-- ═══ RIGHT PANEL: Info + Tabs ═══ --}}
   <div class="ark-right">
 
-    {{!-- Info strip: level badge + bio quick fields + affinities --}}
+    {{!-- Info strip: level badge + type + affinities --}}
     <div class="ark-info-strip">
 
       <div class="ark-level-badge">
@@ -85,13 +84,7 @@
       </div>
 
       <div class="ark-bio-strip">
-        <div class="ark-bio-cell"><span class="ark-bio-lbl">Class</span><input type="text" name="system.bio.class" value="{{system.bio.class}}"/></div>
-        <div class="ark-bio-cell"><span class="ark-bio-lbl">Rank</span><input type="text" name="system.bio.rank" value="{{system.bio.rank}}"/></div>
-        <div class="ark-bio-cell"><span class="ark-bio-lbl">Clearance</span><input type="number" name="system.bio.clearance" value="{{system.bio.clearance}}"/></div>
-        <div class="ark-bio-cell"><span class="ark-bio-lbl">Credits</span><input type="number" name="system.bio.credits" value="{{system.bio.credits}}"/></div>
-        <div class="ark-bio-cell"><span class="ark-bio-lbl">XP</span><input type="number" name="system.bio.xp" value="{{system.bio.xp}}"/></div>
-        <div class="ark-bio-cell"><span class="ark-bio-lbl">JP</span><input type="number" name="system.bio.jp" value="{{system.bio.jp}}"/></div>
-        <div class="ark-bio-cell"><span class="ark-bio-lbl">Fame</span><input type="number" name="system.bio.fame" value="{{system.bio.fame}}"/></div>
+        <div class="ark-bio-cell"><span class="ark-bio-lbl">Type</span><input type="text" name="system.bio.class" value="{{system.bio.class}}"/></div>
       </div>
 
       <div class="ark-strip-right">
@@ -108,16 +101,16 @@
         </div>
         <div class="ark-theme-wrap">
           <select class="theme-select" name="system.theme">
-            <option value="default" {{#if (eq system.theme "default")}}selected{{/if}}>Gold</option>
-            <option value="red"     {{#if (eq system.theme "red")}}selected{{/if}}>Red</option>
-            <option value="blue"    {{#if (eq system.theme "blue")}}selected{{/if}}>Blue</option>
-            <option value="green"   {{#if (eq system.theme "green")}}selected{{/if}}>Green</option>
-            <option value="orange"  {{#if (eq system.theme "orange")}}selected{{/if}}>Orange</option>
-            <option value="pink"    {{#if (eq system.theme "pink")}}selected{{/if}}>Pink</option>
-            <option value="yellow"  {{#if (eq system.theme "yellow")}}selected{{/if}}>Yellow</option>
-            <option value="brown"   {{#if (eq system.theme "brown")}}selected{{/if}}>Brown</option>
-            <option value="purple"  {{#if (eq system.theme "purple")}}selected{{/if}}>Purple</option>
-            <option value="white"   {{#if (eq system.theme "white")}}selected{{/if}}>White</option>
+            <option value="default" {{#if (eq system.theme "default")}}selected{{/if}}>Amber</option>
+            <option value="red"     {{#if (eq system.theme "red")}}selected{{/if}}>Blood</option>
+            <option value="blue"    {{#if (eq system.theme "blue")}}selected{{/if}}>Frost</option>
+            <option value="green"   {{#if (eq system.theme "green")}}selected{{/if}}>Moss</option>
+            <option value="orange"  {{#if (eq system.theme "orange")}}selected{{/if}}>Ember</option>
+            <option value="pink"    {{#if (eq system.theme "pink")}}selected{{/if}}>Feral</option>
+            <option value="yellow"  {{#if (eq system.theme "yellow")}}selected{{/if}}>Venom</option>
+            <option value="brown"   {{#if (eq system.theme "brown")}}selected{{/if}}>Bark</option>
+            <option value="purple"  {{#if (eq system.theme "purple")}}selected{{/if}}>Void</option>
+            <option value="white"   {{#if (eq system.theme "white")}}selected{{/if}}>Bone</option>
           </select>
         </div>
       </div>
@@ -128,8 +121,6 @@
     <nav class="sheet-tabs tabs" data-group="primary">
       <a class="item" data-tab="core">Core</a>
       <a class="item" data-tab="abilities">Abilities</a>
-      <a class="item" data-tab="equipment">Inventory</a>
-      <a class="item" data-tab="classes">Classes</a>
       <a class="item" data-tab="conditions">Conditions</a>
       <a class="item" data-tab="bio">Bio</a>
     </nav>
@@ -249,23 +240,6 @@
         </tr>{{/each}}</tbody></table>
       </div>
 
-      <div class="ability-section" data-ability-section="secondaryActives">
-        <div class="section-title">Secondary Class Actives
-          <span class="ability-max-label">Max:</span>
-          <input type="number" class="ability-max-input" name="system.abilities.secondaryActivesMax" value="{{system.abilities.secondaryActivesMax}}" min="0"/>
-          <button type="button" class="add-row" data-type="secondaryActives">+ Add</button>
-        </div>
-        <table class="ability-table"><thead><tr><th class="col-macro-icon"></th><th>Name</th><th>Cost</th><th>Speed</th><th>Effect</th><th></th></tr></thead>
-        <tbody>{{#each abilitiesEnriched.secondaryActives}}<tr>
-          <td class="center"><img class="ability-macro-icon" src="{{this.macroImg}}" data-type="secondaryActives" data-index="{{@index}}" title="{{this.name}}"/></td>
-          <td><input type="text" name="system.abilities.secondaryActives.{{@index}}.name" value="{{this.name}}"/></td>
-          <td><input type="text" name="system.abilities.secondaryActives.{{@index}}.cost" value="{{this.cost}}"/></td>
-          <td><input type="text" name="system.abilities.secondaryActives.{{@index}}.speed" value="{{this.speed}}"/></td>
-          <td><input type="text" name="system.abilities.secondaryActives.{{@index}}.desc" value="{{this.desc}}"/></td>
-          <td><button type="button" class="del-row" data-type="secondaryActives" data-index="{{@index}}">✕</button></td>
-        </tr>{{/each}}</tbody></table>
-      </div>
-
       <div class="ability-section" data-ability-section="reactions">
         <div class="section-title">Reaction Abilities
           <span class="ability-max-label">Max:</span>
@@ -317,177 +291,7 @@
         </tr>{{/each}}</tbody></table>
       </div>
 
-      <div class="ability-section">
-        <div class="section-title">Learned Abilities <button type="button" class="add-row" data-type="tracker">+ Add</button></div>
-        <table class="ability-table"><thead><tr><th class="col-macro-icon"></th><th>Class</th><th>Name</th><th>Cost</th><th>Speed</th><th>Skill Level</th><th>Effect</th><th></th></tr></thead>
-        <tbody>{{#each abilitiesEnriched.tracker}}<tr>
-          <td class="center"><img class="ability-macro-icon" src="{{this.macroImg}}" data-type="tracker" data-index="{{@index}}" title="{{this.name}}"/></td>
-          <td><input type="text" name="system.abilities.tracker.{{@index}}.class" value="{{this.class}}"/></td>
-          <td><input type="text" name="system.abilities.tracker.{{@index}}.name" value="{{this.name}}"/></td>
-          <td><input type="text" name="system.abilities.tracker.{{@index}}.cost" value="{{this.cost}}"/></td>
-          <td><input type="text" name="system.abilities.tracker.{{@index}}.speed" value="{{this.speed}}"/></td>
-          <td><input type="text" name="system.abilities.tracker.{{@index}}.skillLevel" value="{{this.skillLevel}}"/></td>
-          <td><input type="text" name="system.abilities.tracker.{{@index}}.effect" value="{{this.effect}}"/></td>
-          <td><button type="button" class="del-row" data-type="tracker" data-index="{{@index}}">✕</button></td>
-        </tr>{{/each}}</tbody></table>
-      </div>
-
     </div>{{!-- /abilities --}}
-
-    {{!-- ═══ TAB: INVENTORY ═══ --}}
-    <div class="sheet-body tab" data-tab="equipment" data-group="primary">
-
-      <div class="paperdoll-panel">
-        <div class="paperdoll-slot-list">
-          <div class="paperdoll-slot {{#if paperdoll.mainHand}}pd-filled{{/if}}" data-slot="mainHand" {{#if paperdoll.mainHand}}data-item-id="{{paperdoll.mainHand.id}}"{{/if}}>
-            <div class="pd-portrait">{{#if paperdoll.mainHand}}<img src="{{paperdoll.mainHand.img}}" alt="{{paperdoll.mainHand.name}}"/>{{else}}<span class="pd-empty-icon">—</span>{{/if}}</div>
-            <div class="pd-info"><span class="pd-label">Main Hand</span><span class="pd-name" style="{{#if paperdoll.mainHand.rarityColor}}color:{{paperdoll.mainHand.rarityColor}}{{/if}}">{{#if paperdoll.mainHand}}{{paperdoll.mainHand.name}}{{#if paperdoll.mainHand.upgradeLevel}} <span class="pd-level">+{{paperdoll.mainHand.upgradeLevel}}</span>{{/if}}{{else}}— Nothing Equipped —{{/if}}</span>{{#if paperdoll.mainHand.bonuses}}<span class="pd-bonuses">{{paperdoll.mainHand.bonuses}}</span>{{/if}}</div>
-          </div>
-          <div class="paperdoll-slot {{#if paperdoll.offHand}}pd-filled{{/if}}" data-slot="offHand" {{#if paperdoll.offHand}}data-item-id="{{paperdoll.offHand.id}}"{{/if}}>
-            <div class="pd-portrait">{{#if paperdoll.offHand}}<img src="{{paperdoll.offHand.img}}" alt="{{paperdoll.offHand.name}}"/>{{else}}<span class="pd-empty-icon">—</span>{{/if}}</div>
-            <div class="pd-info"><span class="pd-label">Off-Hand</span><span class="pd-name" style="{{#if paperdoll.offHand.rarityColor}}color:{{paperdoll.offHand.rarityColor}}{{/if}}">{{#if paperdoll.offHand}}{{paperdoll.offHand.name}}{{#if paperdoll.offHand.upgradeLevel}} <span class="pd-level">+{{paperdoll.offHand.upgradeLevel}}</span>{{/if}}{{else}}— Nothing Equipped —{{/if}}</span>{{#if paperdoll.offHand.bonuses}}<span class="pd-bonuses">{{paperdoll.offHand.bonuses}}</span>{{/if}}</div>
-          </div>
-          <div class="paperdoll-slot {{#if paperdoll.head}}pd-filled{{/if}}" data-slot="head" {{#if paperdoll.head}}data-item-id="{{paperdoll.head.id}}"{{/if}}>
-            <div class="pd-portrait">{{#if paperdoll.head}}<img src="{{paperdoll.head.img}}" alt="{{paperdoll.head.name}}"/>{{else}}<span class="pd-empty-icon">—</span>{{/if}}</div>
-            <div class="pd-info"><span class="pd-label">Head</span><span class="pd-name" style="{{#if paperdoll.head.rarityColor}}color:{{paperdoll.head.rarityColor}}{{/if}}">{{#if paperdoll.head}}{{paperdoll.head.name}}{{#if paperdoll.head.upgradeLevel}} <span class="pd-level">+{{paperdoll.head.upgradeLevel}}</span>{{/if}}{{else}}— Nothing Equipped —{{/if}}</span>{{#if paperdoll.head.bonuses}}<span class="pd-bonuses">{{paperdoll.head.bonuses}}</span>{{/if}}</div>
-          </div>
-          <div class="paperdoll-slot {{#if paperdoll.body}}pd-filled{{/if}}" data-slot="body" {{#if paperdoll.body}}data-item-id="{{paperdoll.body.id}}"{{/if}}>
-            <div class="pd-portrait">{{#if paperdoll.body}}<img src="{{paperdoll.body.img}}" alt="{{paperdoll.body.name}}"/>{{else}}<span class="pd-empty-icon">—</span>{{/if}}</div>
-            <div class="pd-info"><span class="pd-label">Body</span><span class="pd-name" style="{{#if paperdoll.body.rarityColor}}color:{{paperdoll.body.rarityColor}}{{/if}}">{{#if paperdoll.body}}{{paperdoll.body.name}}{{#if paperdoll.body.upgradeLevel}} <span class="pd-level">+{{paperdoll.body.upgradeLevel}}</span>{{/if}}{{else}}— Nothing Equipped —{{/if}}</span>{{#if paperdoll.body.bonuses}}<span class="pd-bonuses">{{paperdoll.body.bonuses}}</span>{{/if}}</div>
-          </div>
-          <div class="paperdoll-slot {{#if paperdoll.legs}}pd-filled{{/if}}" data-slot="legs" {{#if paperdoll.legs}}data-item-id="{{paperdoll.legs.id}}"{{/if}}>
-            <div class="pd-portrait">{{#if paperdoll.legs}}<img src="{{paperdoll.legs.img}}" alt="{{paperdoll.legs.name}}"/>{{else}}<span class="pd-empty-icon">—</span>{{/if}}</div>
-            <div class="pd-info"><span class="pd-label">Legs</span><span class="pd-name" style="{{#if paperdoll.legs.rarityColor}}color:{{paperdoll.legs.rarityColor}}{{/if}}">{{#if paperdoll.legs}}{{paperdoll.legs.name}}{{#if paperdoll.legs.upgradeLevel}} <span class="pd-level">+{{paperdoll.legs.upgradeLevel}}</span>{{/if}}{{else}}— Nothing Equipped —{{/if}}</span>{{#if paperdoll.legs.bonuses}}<span class="pd-bonuses">{{paperdoll.legs.bonuses}}</span>{{/if}}</div>
-          </div>
-          <div class="paperdoll-slot {{#if paperdoll.accessory}}pd-filled{{/if}}" data-slot="accessory" {{#if paperdoll.accessory}}data-item-id="{{paperdoll.accessory.id}}"{{/if}}>
-            <div class="pd-portrait">{{#if paperdoll.accessory}}<img src="{{paperdoll.accessory.img}}" alt="{{paperdoll.accessory.name}}"/>{{else}}<span class="pd-empty-icon">—</span>{{/if}}</div>
-            <div class="pd-info"><span class="pd-label">Accessory</span><span class="pd-name" style="{{#if paperdoll.accessory.rarityColor}}color:{{paperdoll.accessory.rarityColor}}{{/if}}">{{#if paperdoll.accessory}}{{paperdoll.accessory.name}}{{#if paperdoll.accessory.upgradeLevel}} <span class="pd-level">+{{paperdoll.accessory.upgradeLevel}}</span>{{/if}}{{else}}— Nothing Equipped —{{/if}}</span>{{#if paperdoll.accessory.bonuses}}<span class="pd-bonuses">{{paperdoll.accessory.bonuses}}</span>{{/if}}</div>
-          </div>
-        </div>
-        <div class="pd-hint">Drag items to equip · Click to open · Right-click to unequip</div>
-      </div>
-
-      <div class="bag-type-row">
-        <div class="bag-field"><label>Bag Type</label><input type="text" name="system.bagType.name" value="{{system.bagType.name}}" placeholder="e.g. Backpack"/></div>
-        <div class="bag-field"><label>Carry Capacity</label><input type="text" name="system.bagType.capacity" value="{{system.bagType.capacity}}" placeholder="e.g. 12"/></div>
-      </div>
-
-      <p class="item-drop-hint">↓ Drag items from the Items Directory onto this sheet to add them</p>
-
-      {{#if ownedItems}}
-      <table class="ability-table owned-item-table unified-item-table">
-        <thead><tr>
-          <th class="col-num">#</th><th class="col-eq">Eq.</th><th class="col-name">Item</th>
-          <th class="col-detail">Detail</th><th class="col-bonuses">Bonuses</th>
-          <th class="col-qty">Qty</th><th class="col-store" title="Deposit to storage">⬇</th>
-          <th class="col-transfer" title="Send to another player">📤</th><th class="col-del"></th>
-        </tr></thead>
-        <tbody>
-          {{#if weapons}}<tr class="item-section-header"><td colspan="9">⚔ Weapons &amp; Off-Hand</td></tr>
-          {{#each weapons}}<tr data-item-id="{{id}}">
-            <td class="row-num">{{globalIndex}}</td>
-            <td class="center"><input type="checkbox" class="item-equip-toggle" {{#if equipped}}checked{{/if}}/></td>
-            <td><a class="item-name-link" style="{{#if rarityColor}}color:{{rarityColor}}{{/if}}">{{name}}{{#if upgradeLevel}} <span class="inv-level-badge">+{{upgradeLevel}}</span>{{/if}}</a></td>
-            <td class="item-type-cell">{{weaponType}}</td>
-            <td class="item-bonus-cell">{{bonusStr}}</td>
-            <td><input type="number" class="item-qty" value="{{qty}}" min="0"/></td>
-            <td><button type="button" class="item-store-btn" title="Deposit to storage">⬇</button></td>
-            <td><button type="button" class="item-transfer-btn" title="Send to another player">📤</button></td>
-            <td><button type="button" class="item-delete del-row">✕</button></td>
-          </tr>{{/each}}{{/if}}
-          {{#if armors}}<tr class="item-section-header"><td colspan="9">🛡 Armor</td></tr>
-          {{#each armors}}<tr data-item-id="{{id}}">
-            <td class="row-num">{{globalIndex}}</td>
-            <td class="center"><input type="checkbox" class="item-equip-toggle" {{#if equipped}}checked{{/if}}/></td>
-            <td><a class="item-name-link" style="{{#if rarityColor}}color:{{rarityColor}}{{/if}}">{{name}}{{#if upgradeLevel}} <span class="inv-level-badge">+{{upgradeLevel}}</span>{{/if}}</a></td>
-            <td class="item-type-cell">{{armorSlot}}</td>
-            <td class="item-bonus-cell">{{bonusStr}}</td>
-            <td><input type="number" class="item-qty" value="{{qty}}" min="0"/></td>
-            <td><button type="button" class="item-store-btn" title="Deposit to storage">⬇</button></td>
-            <td><button type="button" class="item-transfer-btn" title="Send to another player">📤</button></td>
-            <td><button type="button" class="item-delete del-row">✕</button></td>
-          </tr>{{/each}}{{/if}}
-          {{#if otherItems}}<tr class="item-section-header"><td colspan="9">🎒 Items</td></tr>
-          {{#each otherItems}}<tr data-item-id="{{id}}">
-            <td class="row-num">{{globalIndex}}</td>
-            <td class="center">—</td>
-            <td><a class="item-name-link" style="{{#if rarityColor}}color:{{rarityColor}}{{/if}}">{{name}}{{#if upgradeLevel}} <span class="inv-level-badge">+{{upgradeLevel}}</span>{{/if}}</a></td>
-            <td class="item-type-cell">{{type}}</td>
-            <td class="item-bonus-cell">{{bonusStr}}</td>
-            <td><input type="number" class="item-qty" value="{{qty}}" min="0"/></td>
-            <td><button type="button" class="item-store-btn" title="Deposit to storage">⬇</button></td>
-            <td><button type="button" class="item-transfer-btn" title="Send to another player">📤</button></td>
-            <td><button type="button" class="item-delete del-row">✕</button></td>
-          </tr>{{/each}}{{/if}}
-        </tbody>
-      </table>
-      {{else}}<div class="no-items-msg">No items yet — drag from the Items Directory to add them.</div>{{/if}}
-
-      <div class="section-title" style="margin-top:1rem">Stored Materials</div>
-      <div class="crafting-grid">
-        <div class="craft-item"><label>Ore</label><input type="number" name="system.crafting.ore" value="{{system.crafting.ore}}" min="0"/></div>
-        <div class="craft-item"><label>Leather</label><input type="number" name="system.crafting.leather" value="{{system.crafting.leather}}" min="0"/></div>
-        <div class="craft-item"><label>Fabric</label><input type="number" name="system.crafting.fabric" value="{{system.crafting.fabric}}" min="0"/></div>
-        <div class="craft-item"><label>Wood</label><input type="number" name="system.crafting.wood" value="{{system.crafting.wood}}" min="0"/></div>
-        <div class="craft-item"><label>Rations</label><input type="number" name="system.crafting.rations" value="{{system.crafting.rations}}" min="0"/></div>
-        <div class="craft-item"><label>Scrap</label><input type="number" name="system.crafting.scrap" value="{{system.crafting.scrap}}" min="0"/></div>
-        <div class="craft-item"><label>Ephi Shard</label><input type="number" name="system.crafting.ephi" value="{{system.crafting.ephi}}" min="0"/></div>
-        <div class="craft-item"><label>Amynti Shard</label><input type="number" name="system.crafting.amynti" value="{{system.crafting.amynti}}" min="0"/></div>
-        <div class="craft-item"><label>Carmine Shard</label><input type="number" name="system.crafting.carmine" value="{{system.crafting.carmine}}" min="0"/></div>
-        <div class="craft-item"><label>Fire Essence</label><input type="number" name="system.crafting.essenceFire" value="{{system.crafting.essenceFire}}" min="0"/></div>
-        <div class="craft-item"><label>Water Essence</label><input type="number" name="system.crafting.essenceWater" value="{{system.crafting.essenceWater}}" min="0"/></div>
-        <div class="craft-item"><label>Earth Essence</label><input type="number" name="system.crafting.essenceEarth" value="{{system.crafting.essenceEarth}}" min="0"/></div>
-        <div class="craft-item"><label>Air Essence</label><input type="number" name="system.crafting.essenceAir" value="{{system.crafting.essenceAir}}" min="0"/></div>
-        <div class="craft-item"><label>Spirit Essence</label><input type="number" name="system.crafting.essenceSpirit" value="{{system.crafting.essenceSpirit}}" min="0"/></div>
-        <div class="craft-item"><label>Runes</label><input type="number" name="system.crafting.runes" value="{{system.crafting.runes}}" min="0"/></div>
-      </div>
-
-      <div class="section-title" style="margin-top:1.2rem">Stored Items</div>
-      {{#if storedItems.length}}
-      <table class="ability-table owned-item-table unified-item-table">
-        <thead><tr><th class="col-name">Item</th><th class="col-detail">Type</th><th class="col-qty">Qty</th><th class="col-store" title="Withdraw">⬆</th><th class="col-del"></th></tr></thead>
-        <tbody>{{#each storedItems}}<tr data-item-id="{{id}}">
-          <td><a class="item-name-link">{{name}}</a></td>
-          <td class="item-type-cell">{{type}}</td>
-          <td><input type="number" class="item-qty" value="{{qty}}" min="0"/></td>
-          <td><button type="button" class="item-carry-btn" title="Withdraw to inventory">⬆</button></td>
-          <td><button type="button" class="item-delete del-row">✕</button></td>
-        </tr>{{/each}}</tbody>
-      </table>
-      {{else}}<div class="no-items-msg">Storage is empty.</div>{{/if}}
-
-    </div>{{!-- /equipment --}}
-
-    {{!-- ═══ TAB: CLASSES ═══ --}}
-    <div class="sheet-body tab" data-tab="classes" data-group="primary">
-
-      <div class="section-title">Classes <button type="button" class="add-row" data-type="classes">+ Add</button></div>
-      <table class="ability-table"><thead><tr><th>Class</th><th>Level</th><th>Bonus</th><th></th></tr></thead>
-      <tbody>{{#each system.classes}}<tr>
-        <td><input type="text" name="system.classes.{{@index}}.class" value="{{this.class}}"/></td>
-        <td><input type="number" name="system.classes.{{@index}}.level" value="{{this.level}}"/></td>
-        <td><input type="text" name="system.classes.{{@index}}.next" value="{{this.next}}"/></td>
-        <td><button type="button" class="del-row" data-type="classes" data-index="{{@index}}">✕</button></td>
-      </tr>{{/each}}</tbody></table>
-
-      <div class="section-title" style="margin-top:1rem">Weapon Proficiencies <span style="font-size:9px;color:#7a8090;text-transform:none;letter-spacing:0;font-weight:400">(ATK/DMG +1 per level)</span></div>
-      <div class="weapon-prof-grid">
-        {{#each weaponProfDisplay}}<div class="weapon-prof-item">
-          <label>{{label}}</label>
-          <input type="number" name="system.weaponProf.{{key}}" value="{{level}}" min="0"/>
-        </div>{{/each}}
-      </div>
-
-      <div class="section-title" style="margin-top:1rem">Studies <button type="button" class="add-row" data-type="studies">+ Add</button></div>
-      <table class="ability-table"><thead><tr><th>Book</th><th>Knowledge</th><th>Bonus</th><th></th></tr></thead>
-      <tbody>{{#each system.studies}}<tr>
-        <td class="center"><input type="checkbox" name="system.studies.{{@index}}.book" {{#if this.book}}checked{{/if}}/></td>
-        <td><input type="text" name="system.studies.{{@index}}.knowledge" value="{{this.knowledge}}"/></td>
-        <td><input type="text" name="system.studies.{{@index}}.bonus" value="{{this.bonus}}"/></td>
-        <td><button type="button" class="del-row" data-type="studies" data-index="{{@index}}">✕</button></td>
-      </tr>{{/each}}</tbody></table>
-
-    </div>{{!-- /classes --}}
 
     {{!-- ═══ TAB: CONDITIONS ═══ --}}
     <div class="sheet-body tab" data-tab="conditions" data-group="primary">
@@ -511,15 +315,15 @@
       <div class="bio-grid">
         <div class="bio-field"><label>Name</label><input type="text" name="system.bio.charName" value="{{system.bio.charName}}"/></div>
         <div class="bio-field"><label>Age</label><input type="text" name="system.bio.age" value="{{system.bio.age}}"/></div>
-        <div class="bio-field"><label>Race</label><input type="text" name="system.bio.race" value="{{system.bio.race}}"/></div>
+        <div class="bio-field"><label>Species</label><input type="text" name="system.bio.race" value="{{system.bio.race}}"/></div>
         <div class="bio-field"><label>Gender</label><input type="text" name="system.bio.gender" value="{{system.bio.gender}}"/></div>
-        <div class="bio-field"><label>Hair</label><input type="text" name="system.bio.hair" value="{{system.bio.hair}}"/></div>
+        <div class="bio-field"><label>Hide/Pelt</label><input type="text" name="system.bio.hair" value="{{system.bio.hair}}"/></div>
         <div class="bio-field"><label>Eyes</label><input type="text" name="system.bio.eyes" value="{{system.bio.eyes}}"/></div>
         <div class="bio-field"><label>Height</label><input type="text" name="system.bio.height" value="{{system.bio.height}}"/></div>
         <div class="bio-field"><label>Weight</label><input type="text" name="system.bio.weight" value="{{system.bio.weight}}"/></div>
       </div>
       <div class="bio-rich"><label>History</label><textarea name="system.bio.history" rows="5">{{system.bio.history}}</textarea></div>
-      <div class="bio-rich"><label>First Introduction</label><textarea name="system.bio.firstIntro" rows="5">{{system.bio.firstIntro}}</textarea></div>
+      <div class="bio-rich"><label>First Encounter</label><textarea name="system.bio.firstIntro" rows="5">{{system.bio.firstIntro}}</textarea></div>
       <div class="bio-rich"><label>Notes</label><textarea name="system.bio.notes" rows="5">{{system.bio.notes}}</textarea></div>
 
       <div class="section-title" style="margin-top:1rem">Custom Fields <button type="button" class="add-row" data-type="bioCustom">+ Add Field</button></div>

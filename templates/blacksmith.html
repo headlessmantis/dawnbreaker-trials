@@ -1,0 +1,101 @@
+{{!-- Dawnbreaker Trials — Blacksmith --}}
+<div class="db-smith-wrap">
+
+  <div class="db-smith-topbar">
+    <span class="db-smith-terminal-label">FORGE TERMINAL</span>
+    <span class="db-smith-terminal-sep">·</span>
+    <span class="db-smith-terminal-name">BLACKSMITH</span>
+  </div>
+
+  <div class="db-smith-body">
+
+    {{!-- Item List --}}
+    <div class="db-smith-list">
+      <div class="db-smith-list-header">▶ SELECT ITEM</div>
+      {{#each upgradeableItems}}
+      <div class="db-smith-item-row {{#if isSelected}}active{{/if}}" data-item-id="{{id}}">
+        <img src="{{img}}" class="db-smith-item-thumb"/>
+        <div class="db-smith-item-info">
+          <span class="db-smith-item-name" style="color:{{rarityColor}}">{{name}}</span>
+          <span class="db-smith-item-level">
+            {{#if atMax}}MAX LEVEL{{else}}+{{level}} — {{rarityLabel}}{{/if}}
+          </span>
+        </div>
+        <span class="db-smith-item-arrow">&gt;&gt;</span>
+      </div>
+      {{else}}
+      <div class="db-smith-empty">No upgradeable items</div>
+      {{/each}}
+    </div>
+
+    {{!-- Detail Panel --}}
+    <div class="db-smith-detail">
+      <span class="db-corner db-corner-tl"></span>
+      <span class="db-corner db-corner-tr"></span>
+      <span class="db-corner db-corner-bl"></span>
+      <span class="db-corner db-corner-br"></span>
+
+      {{#if selectedItem}}
+      <div class="db-smith-detail-header">
+        <img src="{{selectedItem.img}}" class="db-smith-detail-img"/>
+        <div class="db-smith-detail-title">
+          <span class="db-smith-detail-name" style="color:{{selectedItem.rarityColor}}">{{selectedItem.name}}</span>
+          <span class="db-smith-detail-rarity rarity-{{selectedItem.rarity}}">{{selectedItem.rarityLabel}}</span>
+          <span class="db-smith-detail-level">
+            {{#if selectedItem.atMax}}
+              MAX UPGRADE REACHED
+            {{else}}
+              UPGRADE +{{selectedItem.level}} → +{{selectedItem.nextLevel}}
+              {{#if selectedItem.crossesRarityBoundary}}
+                <span style="color:var(--db-accent)"> [BECOMES {{selectedItem.nextRarity}}]</span>
+              {{/if}}
+            {{/if}}
+          </span>
+        </div>
+      </div>
+
+      <div class="db-smith-divider"><span class="db-smith-divider-gem">◆</span></div>
+
+      {{!-- Enhancement Slots --}}
+      <div class="db-smith-slots">
+        <div class="db-smith-slots-title">▶ ENHANCEMENT SLOTS</div>
+        {{#each slotRows}}
+        <div class="db-smith-slot-row {{#if isFixed}}slot-fixed{{else if isFilled}}slot-filled{{else}}slot-empty{{/if}}">
+          <span class="db-smith-slot-label">SLOT {{slotIndex}}</span>
+          <span class="db-smith-slot-value">{{label}}</span>
+          {{#if badge}}<span class="db-smith-slot-type">[{{badge}}]</span>{{/if}}
+        </div>
+        {{/each}}
+      </div>
+
+      {{#unless selectedItem.atMax}}
+      <div class="db-smith-divider"><span class="db-smith-divider-gem">◆</span></div>
+
+      {{!-- Cost Table --}}
+      <table class="db-smith-cost-table">
+        <tr>
+          <th>MATERIAL</th>
+          <th>REQUIRED</th>
+          <th>IN STORAGE</th>
+        </tr>
+        {{#each costRows}}
+        <tr class="{{#if canAfford}}db-smith-cost-row-have{{else}}db-smith-cost-row-need{{/if}}">
+          <td>{{label}}</td>
+          <td>{{need}}</td>
+          <td>{{have}}</td>
+        </tr>
+        {{/each}}
+      </table>
+
+      <button type="button" class="db-smith-forge-btn {{#unless canAfford}}db-smith-forge-btn-disabled{{/unless}}" {{#unless canAfford}}disabled{{/unless}}>
+        FORGE +{{selectedItem.nextLevel}}
+      </button>
+      {{/unless}}
+
+      {{else}}
+      <div class="db-smith-empty">SELECT AN ITEM TO UPGRADE</div>
+      {{/if}}
+    </div>
+
+  </div>
+</div>
