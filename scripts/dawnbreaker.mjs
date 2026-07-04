@@ -6200,8 +6200,9 @@ class TargetSelector extends foundry.appv1.api.Application {
       }
       const affectedTokens = this._getAffectedTokens(token, canvas.tokens.placeables);
       this._clearAoEPreview(); this._clearRangeHighlight();
-      // Face attacker toward selected target
-      if (attackerToken) {
+      // Face attacker toward selected target (skip on self-target — the
+      // zero-length vector would snap facing to East)
+      if (attackerToken && token.id !== attackerToken.id) {
         const dx = token.document.x - attackerToken.document.x;
         const dy = token.document.y - attackerToken.document.y;
         const angleDeg = Math.atan2(dy, dx) * (180 / Math.PI); // −180..180, 0=East
