@@ -4256,7 +4256,12 @@ const DB_REACTIONS = {
           ? canvas.tokens.placeables.find(t => t.document.id === sourceTokenId)
           : null;
         if (exactAttackerToken) {
-          candidateTokens = [exactAttackerToken];
+          // Counter still requires the attacker within weapon reach — a known
+          // attacker token outside melee range (ranged attack) is not counterable.
+          const ex = Math.round(exactAttackerToken.document.x / size);
+          const ey = Math.round(exactAttackerToken.document.y / size);
+          const inReach = Math.abs(ex - dx2) + Math.abs(ey - dy2) <= weaponReach;
+          candidateTokens = inReach ? [exactAttackerToken] : [];
         } else {
           // Fallback (older callers that don't pass sourceTokenId yet): find
           // adjacent enemies within weapon reach, preferring sourceActorId match.
