@@ -7648,6 +7648,8 @@ Hooks.once("ready", () => {
         await window._dbApplyDamage(data);
       } else if (data.type === "throwApply") {
         await actor.update(data.updates);
+      } else if (data.type === "applyCondition") {
+        await actor.update({ "system.conditions": data.conditions });
       } else if (data.type === "trapUpdate" && game.user.isGM) {
         await game.settings.set("dawnbreaker-trials", "trapState", data.traps);
         if (window.TrapSystem) TrapSystem.drawTraps();
