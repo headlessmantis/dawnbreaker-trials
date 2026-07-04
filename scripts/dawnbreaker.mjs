@@ -7784,7 +7784,7 @@ Hooks.once("ready", () => {
     const arChanged         = foundry.utils.getProperty(changes, "system.ar.current") !== undefined;
     const kiChanged         = foundry.utils.getProperty(changes, "system.ki.current") !== undefined;
     const conditionsChanged = foundry.utils.getProperty(changes, "system.conditions") !== undefined;
-    if (hpChanged || arChanged || kiChanged || conditionsChanged) setTimeout(() => CTBDisplay.refresh(), 100);
+    if (hpChanged || arChanged || kiChanged || conditionsChanged) window.DawnbreakerPartyHUD?.render?.();
 
     // Sync conditions and AP into CTB state
     const state = CTB.getState();

@@ -172,12 +172,23 @@ class DawnbreakerPartyHUD {
     // Re-fetch from game.actors to ensure prepareData-derived stats (PR/MR/AP totalKennel) are current.
     Hooks.on("updateActor", (actor) => {
       const fresh = game.actors.get(actor.id) ?? actor;
-      if (DawnbreakerPartyHUD.isInParty(fresh.id)) DawnbreakerPartyHUD.updateCard(fresh);
-      if (DawnbreakerGuestHUD.isGuest(fresh.id))   DawnbreakerGuestHUD.updateCard(fresh);
+      // Combat: cards are token-keyed — update every combatant card sharing this actorId.
+      // Covers Scanned NPCs and any combat actor that isn't a party member or guest.
+      const state = window.CTB?.getState?.() ?? {};
+      const combatEntries = (state.combatants ?? []).filter(c => c.actorId === fresh.id);
+      if (combatEntries.length) {
+        for (const c of combatEntries) {
+          const token = canvas?.tokens?.placeables?.find(t => (t.document?.id ?? t.id) === c.tokenId);
+          DawnbreakerPartyHUD.updateCard(token?.actor ?? fresh, c.tokenId);
+        }
+      } else if (DawnbreakerPartyHUD.isInParty(fresh.id)) {
+        DawnbreakerPartyHUD.updateCard(fresh);
+      }
+      if (DawnbreakerGuestHUD.isGuest(fresh.id)) DawnbreakerGuestHUD.updateCard(fresh);
     });
 
     Hooks.on("updateToken", (tokenDoc, changes) => {
-      // Only care about stat/name changes (delta = V14, actorData = V13)
+      // Stat/condition changes on unlinked tokens arrive via delta (V14) / actorData (V13)
       if (!changes.delta && !changes.actorData && !changes.name) return;
       const tokenId = tokenDoc.id;
       // Is this token in the current combat list?
