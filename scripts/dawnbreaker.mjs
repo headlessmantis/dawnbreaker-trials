@@ -6028,9 +6028,17 @@ class TargetSelector extends foundry.appv1.api.Application {
       // (party bar → action menu → submenu), top-aligned with it. Settle
       // delay so the window's own auto-sizing doesn't override the position.
       setTimeout(() => {
+        // NOTE: the HUD columns are position:fixed — offsetParent is always
+        // null for those, so visibility must be checked via rect + computed
+        // style instead.
         const hudEls = ["dbt-hud-sub", "dbt-hud-root", "dbt-party-root"]
           .map(id => document.getElementById(id))
-          .filter(el => el && el.offsetParent !== null); // visible only
+          .filter(el => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const cs = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && cs.display !== "none" && cs.visibility !== "hidden";
+          });
         if (hudEls.length) {
           const rects = hudEls.map(el => el.getBoundingClientRect());
           const rightmost = rects.reduce((a, b) => (b.right > a.right ? b : a));
