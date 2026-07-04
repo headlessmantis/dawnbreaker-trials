@@ -2480,7 +2480,8 @@ Hooks.once("ready", () => {
   game.socket.on("system.dawnbreaker-trials", async (data) => {
     if (!game.user.isGM && !game.actors.get(data.actorId)?.isOwner) return;
     if (game.user.isGM || !game.users.find(u => u.isGM && u.active)) {
-      const actor = game.actors.get(data.actorId);
+      const actorToken = data.tokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.tokenId) : null;
+      const actor = actorToken?.actor ?? game.actors.get(data.actorId);
       if (!actor) return;
       if (data.type === "applyDamage") {
         await actor.update({ "system.hp.current": data.newHP });
@@ -4412,7 +4413,10 @@ async function _checkGolemGripBreak(golemActor, actualARDmg) {
     return;
   }
 
-  const targetActor = game.actors.get(state.targetActorId);
+  const targetToken = state.targetTokenId
+    ? canvas.tokens?.placeables?.find(t => t.document.id === state.targetTokenId)
+    : null;
+  const targetActor = targetToken?.actor ?? game.actors.get(state.targetActorId);
   if (targetActor) {
     const dd = targetActor.getFlag("dawnbreaker-trials", "detainData") ?? { detainerTokenIds: [] };
     for (const tId of dd.detainerTokenIds ?? []) {
@@ -4582,8 +4586,12 @@ window._dbUndo = async () => {
 };
 
 window._dbApplyDamage = async (data) => {
-  // Resolve token actor first — handles unlinked tokens correctly
-  const tokenActor = canvas.tokens?.placeables?.find(t => t.actor?.id === data.actorId)?.actor;
+  // Resolve token actor first — prefer explicit tokenId so unlinked duplicate
+  // tokens (sharing the same actorId) resolve to the exact instance targeted,
+  // not just whichever matching token happens to be first on the canvas.
+  const tokenActor = data.tokenId
+    ? canvas.tokens?.placeables?.find(t => t.document.id === data.tokenId)?.actor
+    : canvas.tokens?.placeables?.find(t => t.actor?.id === data.actorId)?.actor;
   const actor = tokenActor ?? game.actors.get(data.actorId);
   if (!actor) return;
 
@@ -5905,6 +5913,7 @@ class TargetSelector extends foundry.appv1.api.Application {
     this._attacker    = options.attacker    ?? null;
     this._attackerToken = options.attackerToken ?? null;
     this._reach       = options.reach       ?? 99;
+    this._minReach    = options.minReach    ?? 0;
     this._range       = options.range       ?? 0;
     this._shape       = options.shape       ?? "circle";
     this._archingShot = options.archingShot ?? false;
@@ -6051,11 +6060,15 @@ class TargetSelector extends foundry.appv1.api.Application {
         const los = window._checkRangedLOS(attackerToken, t, false);
         losBlocked = los.blocked;
       }
-      return { tokenId: t.id, name: t.name, img: t.document.texture?.src ?? actor?.img, disposition: t.document.disposition, showStats, inRange: dist <= this._reach && !losBlocked, dist, losBlocked, hp: showStats ? actor?.system?.hp : null, ar: showStats ? actor?.system?.ar : null, ki: showStats ? actor?.system?.ki : null, conditions: actor?.system?.conditions ?? [] };
+      return { tokenId: t.id, name: t.name, img: t.document.texture?.src ?? actor?.img, disposition: t.document.disposition, showStats, inRange: dist <= this._reach && dist >= this._minReach && !losBlocked, dist, losBlocked, hp: showStats ? actor?.system?.hp : null, ar: showStats ? actor?.system?.ar : null, ki: showStats ? actor?.system?.ki : null, conditions: actor?.system?.conditions ?? [] };
     };
     const enemies = [], allies = [];
     for (const t of allTokens) {
-      if (!t.actor || t.actor.id === attacker?.id) continue;
+      if (!t.actor) continue;
+      // Exclude the attacker's own token by token identity, not actor id —
+      // unlinked duplicate tokens (e.g. multiple Golem Sentries) share the
+      // same actor id and must remain individually targetable.
+      if (attackerToken ? t.id === attackerToken.id : t.actor.id === attacker?.id) continue;
 
       // If attacker is threatened, only show the threatening actor regardless of range/type
       if (threatenedByActorId) {
@@ -6082,7 +6095,11 @@ class TargetSelector extends foundry.appv1.api.Application {
       const token   = canvas.tokens.placeables.find(t => t.document?.id === tokenId || t.id === tokenId);
       if (!token) return;
       const attackerToken = canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
-      if (attackerToken && this._tileDistance(attackerToken, token) > this._reach) { ui.notifications.warn(`Out of range!`); return; }
+      if (attackerToken) {
+        const selDist = this._tileDistance(attackerToken, token);
+        if (selDist > this._reach) { ui.notifications.warn(`Out of range!`); return; }
+        if (selDist < this._minReach) { ui.notifications.warn(`Target is too close!`); return; }
+      }
       const affectedTokens = this._getAffectedTokens(token, canvas.tokens.placeables);
       this._clearAoEPreview(); this._clearRangeHighlight();
       // Face attacker toward selected target
@@ -6110,7 +6127,7 @@ class TargetSelector extends foundry.appv1.api.Application {
     setTimeout(() => { canvas.interface?.grid?.clearHighlightLayer("crucible.movement"); this._showRangeHighlight(); console.log(`TargetSelector | Showing range highlight, reach=${this._reach}, attacker=${this._attacker?.name}`); }, 150);
   }
   async close(...args) { this._clearAoEPreview(); this._clearRangeHighlight(); return super.close(...args); }
-  static select({ abilityName, abilityDesc, abilityIcon, targetType, attacker, attackerToken, tokenDoc, reach, range, shape, archingShot }) {
+  static select({ abilityName, abilityDesc, abilityIcon, targetType, attacker, attackerToken, tokenDoc, reach, minReach, range, shape, archingShot }) {
     return new Promise((resolve) => {
       // Resolve the specific canvas token placeable for the attacker.
       // Priority: explicit attackerToken → tokenDoc (TokenDocument from HUD scope) →
@@ -6120,7 +6137,7 @@ class TargetSelector extends foundry.appv1.api.Application {
       const resolvedAttackerToken = attackerToken
         ?? (tokenDoc ? canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === tokenDoc?.id) : null)
         ?? (controlled?.actor?.id === attacker?.id ? controlled : null);
-      const app = new TargetSelector({ abilityName, abilityDesc, abilityIcon, targetType: targetType ?? "enemy", attacker, attackerToken: resolvedAttackerToken, reach: reach ?? 99, range: range ?? 0, shape: shape ?? "circle", archingShot: archingShot ?? false, onSelect: (token, affectedTokens) => resolve({ token, affectedTokens }) });
+      const app = new TargetSelector({ abilityName, abilityDesc, abilityIcon, targetType: targetType ?? "enemy", attacker, attackerToken: resolvedAttackerToken, reach: reach ?? 99, minReach: minReach ?? 0, range: range ?? 0, shape: shape ?? "circle", archingShot: archingShot ?? false, onSelect: (token, affectedTokens) => resolve({ token, affectedTokens }) });
       app.render(true);
       const origClose = app.close.bind(app);
       app.close = async (...args) => { if (!app._skipResolve) resolve(null); return origClose(...args); };
@@ -7286,7 +7303,10 @@ Hooks.once("ready", () => {
   _ensureEnhancementTablesJournal();
 
   game.socket.on("system.dawnbreaker-trials", async (data) => {
-    const actor = data.actorId ? game.actors.get(data.actorId) : null;
+    // Prefer resolving via tokenId — unlinked duplicate tokens share actorId,
+    // so game.actors.get(actorId) alone can't distinguish between them.
+    const actorToken = data.tokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.tokenId) : null;
+    const actor = actorToken?.actor ?? (data.actorId ? game.actors.get(data.actorId) : null);
 
     // CTB display commands — handle on ALL clients regardless of GM status
     if (data.type === "ctbOpen") {
