@@ -7424,8 +7424,10 @@ Hooks.on("renderApplication", (app, html) => {
 
 // AppV2 windows (FilePicker, core config apps, etc.) fire a different render
 // hook and were never bumped — they'd open UNDER recently-opened v1 sheets.
+// Only framed windows: frameless overlays (ESC menu, notifications) manage
+// their own fullscreen layout and touching their position collapses them.
 Hooks.on("renderApplicationV2", (app) => {
-  _bumpZIndexAboveOthers(app);
+  if (app.hasFrame) _bumpZIndexAboveOthers(app);
 });
 
 Hooks.once("ready", () => {
