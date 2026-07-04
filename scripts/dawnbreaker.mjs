@@ -4215,9 +4215,7 @@ const DB_REACTIONS = {
         // Need AP to counter (at least -70 remaining after -30)
         return (actor.system.ctbAP ?? 0) > -70;
       },
-      handler: async (actor, dmg, attackType) => {
-        // Find the attacker — scan for the most recent attacker token
-        // We pass attackType context but need attacker token from canvas
+      handler: async (actor, dmg, attackType, sourceActorId = null, sourceTokenId = null) => {
         // Counter fires after damage is received — find enemy tokens in weapon reach
         const defenderToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
         if (!defenderToken) return dmg;
@@ -4228,15 +4226,31 @@ const DB_REACTIONS = {
         const defDisp     = defenderToken.document.disposition;
         const weaponReach = actor.items.find(i => ["weapon","offhand"].includes(i.type) && i.system.equipped)?.system?.reach ?? 1;
 
-        // Find adjacent enemies within weapon reach
-        const adjacentEnemies = canvas.tokens.placeables.filter(t => {
-          if (!t.actor || t.document.disposition === defDisp) return false;
-          const ex = Math.round(t.document.x / size);
-          const ey = Math.round(t.document.y / size);
-          return Math.abs(ex - dx2) + Math.abs(ey - dy2) <= weaponReach;
-        });
+        // Prefer the exact attacking token if it was passed through — this is
+        // required when multiple duplicate/unlinked tokens (e.g. several
+        // Crystal Burrowers) share the same actorId, since scanning "any
+        // adjacent enemy" would otherwise counter whichever one is first on
+        // the canvas, not the one that actually attacked.
+        let candidateTokens;
+        const exactAttackerToken = sourceTokenId
+          ? canvas.tokens.placeables.find(t => t.document.id === sourceTokenId)
+          : null;
+        if (exactAttackerToken) {
+          candidateTokens = [exactAttackerToken];
+        } else {
+          // Fallback (older callers that don't pass sourceTokenId yet): find
+          // adjacent enemies within weapon reach, preferring sourceActorId match.
+          const adjacentEnemies = canvas.tokens.placeables.filter(t => {
+            if (!t.actor || t.document.disposition === defDisp) return false;
+            const ex = Math.round(t.document.x / size);
+            const ey = Math.round(t.document.y / size);
+            return Math.abs(ex - dx2) + Math.abs(ey - dy2) <= weaponReach;
+          });
+          const bySourceActor = sourceActorId ? adjacentEnemies.filter(t => t.actor?.id === sourceActorId) : [];
+          candidateTokens = bySourceActor.length ? bySourceActor : adjacentEnemies;
+        }
 
-        for (const attackerToken of adjacentEnemies) {
+        for (const attackerToken of candidateTokens) {
           // Skip if attacking from behind
           if (window._isAttackingFromBehind(defenderToken, attackerToken)) continue;
 
@@ -4373,7 +4387,7 @@ const DB_REACTIONS = {
 };
 
 // Run all matching reactions for a trigger — returns { handled: bool, finalDmg: number }
-async function _runReactions(trigger, actor, dmg, attackType, sourceActorId = null) {
+async function _runReactions(trigger, actor, dmg, attackType, sourceActorId = null, sourceTokenId = null) {
   const reactions = DB_REACTIONS[trigger] ?? [];
   for (const reaction of reactions) {
     // Check embedded items, system.abilities text arrays, AND system.attacks (NPC)
@@ -4385,7 +4399,7 @@ async function _runReactions(trigger, actor, dmg, attackType, sourceActorId = nu
     const hasAbility = inItems || inAbilities || inAttacks;
     if (!hasAbility) continue;
     if (!reaction.canReact(actor, dmg, attackType, sourceActorId)) continue;
-    const result = await reaction.handler(actor, dmg, attackType, sourceActorId);
+    const result = await reaction.handler(actor, dmg, attackType, sourceActorId, sourceTokenId);
     if (result === null) return { handled: true, finalDmg: 0 }; // handler takes over
     dmg = result; // handler modified damage, continue chain
   }
@@ -4635,7 +4649,7 @@ window._dbApplyDamage = async (data) => {
     // Run HP damage reactions (skipped if Tunnel Ambush)
     const { handled, finalDmg: reactionDmg } = isTunnelAmbush
       ? { handled: false, finalDmg: finalDmg }
-      : await _runReactions("onHpDamage", actor, finalDmg, data.attackType, data.sourceActorId);
+      : await _runReactions("onHpDamage", actor, finalDmg, data.attackType, data.sourceActorId, data.sourceTokenId);
     if (handled) return;
 
     // Moon Guardian — check if any ally has this actor shielded
