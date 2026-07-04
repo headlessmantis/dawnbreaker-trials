@@ -1767,8 +1767,10 @@ class DawnbreakerShopApp extends foundry.appv1.api.Application {
     const el = this.element?.[0];
     if (el) {
       el.style.borderRadius = "0";
+      // Shop is a fullscreen terminal takeover — always on top of everything
+      // except the cutscene overlay (99999)
+      el.style.zIndex = "99998";
     }
-    _bumpZIndexAboveOthers(this);
   }
 
   _catAbbrev(cat) { return (cat ?? "GN").slice(0, 2).toUpperCase(); }
@@ -6019,10 +6021,13 @@ class TargetSelector extends foundry.appv1.api.Application {
   async _render(force, options) {
     await super._render(force, options);
     if (force) {
-      // Anchor beneath the action menu HUD; fall back to beside the CTB panel
-      const hud = document.querySelector("#ib-hud-layer");
-      if (hud) {
-        const rect = hud.getBoundingClientRect();
+      // Anchor beneath the action menu itself (.ib-action-root) — the
+      // #ib-hud-layer wrapper spans the whole viewport and is useless as an
+      // anchor. Fall back to beside the CTB panel.
+      const actionMenu = document.querySelector("#ib-hud-layer .ib-action-root")
+        ?? document.querySelector(".ib-action-root");
+      if (actionMenu) {
+        const rect = actionMenu.getBoundingClientRect();
         this.setPosition({ left: rect.left, top: rect.bottom + 8 });
       } else {
         const ctb = CTBDisplay.getInstance();
@@ -7365,12 +7370,16 @@ Hooks.once("init", () => {
 // Shared by every popup/window render: always stack one z-index above whatever
 // else is currently open, instead of any fixed/hardcoded z-index value.
 function _bumpZIndexAboveOthers(app, fallback = 10000) {
-  const el = app.element?.[0];
+  // Works for both AppV1 (element is jQuery) and AppV2 (element is HTMLElement)
+  const el = app.element?.[0] ?? (app.element instanceof HTMLElement ? app.element : null);
   if (!el) return;
-  const openEls = Object.values(ui.windows ?? {})
-    .filter(w => w.rendered && w.id !== app.id)
-    .map(w => w.element?.[0])
-    .filter(Boolean);
+  const v1Els = Object.values(ui.windows ?? {})
+    .filter(w => w.rendered)
+    .map(w => w.element?.[0]);
+  const v2Els = [...(foundry.applications?.instances?.values?.() ?? [])]
+    .filter(w => w.rendered)
+    .map(w => (w.element instanceof HTMLElement ? w.element : w.element?.[0]));
+  const openEls = [...v1Els, ...v2Els].filter(e => e && e !== el);
   const maxZ = openEls.reduce((max, e) => {
     const z = parseInt(e.style.zIndex || window.getComputedStyle(e).zIndex, 10);
     return Number.isFinite(z) ? Math.max(max, z) : max;
@@ -7395,6 +7404,12 @@ Hooks.on("renderApplication", (app, html) => {
   }
 
   // All windows/dialogs: always render one z-index above whatever else is open
+  _bumpZIndexAboveOthers(app);
+});
+
+// AppV2 windows (FilePicker, core config apps, etc.) fire a different render
+// hook and were never bumped — they'd open UNDER recently-opened v1 sheets.
+Hooks.on("renderApplicationV2", (app) => {
   _bumpZIndexAboveOthers(app);
 });
 
