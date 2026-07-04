@@ -1767,8 +1767,11 @@ class DawnbreakerShopApp extends foundry.appv1.api.Application {
     const el = this.element?.[0];
     if (el) {
       el.style.borderRadius = "0";
-      // Shop is a fullscreen terminal takeover — always on top of everything
-      // except the cutscene overlay (99999)
+      // Shop is a fullscreen terminal takeover — sits above everything open
+      // before it. Jump the shared core z counter to the shop's level so any
+      // window opened FROM the shop (GM dialogs etc.) still lands above it.
+      const AppV2 = foundry.applications?.api?.ApplicationV2;
+      if (AppV2 && typeof AppV2._maxZ === "number") AppV2._maxZ = Math.max(AppV2._maxZ, 99998);
       el.style.zIndex = "99998";
     }
   }
@@ -6021,21 +6024,24 @@ class TargetSelector extends foundry.appv1.api.Application {
   async _render(force, options) {
     await super._render(force, options);
     if (force) {
-      // Anchor beneath the action menu itself (.ib-action-root) — the
-      // #ib-hud-layer wrapper spans the whole viewport and is useless as an
-      // anchor. Fall back to beside the CTB panel.
-      const actionMenu = document.querySelector("#ib-hud-layer .ib-action-root")
-        ?? document.querySelector(".ib-action-root");
-      if (actionMenu) {
-        const rect = actionMenu.getBoundingClientRect();
-        this.setPosition({ left: rect.left, top: rect.bottom + 8 });
-      } else {
-        const ctb = CTBDisplay.getInstance();
-        if (ctb?.rendered) {
-          const { left, top, width } = ctb.position;
-          this.setPosition({ left: left + width + 4, top });
+      // Anchor beneath the action menu (#ib-action-root — it's an ID, the
+      // stylish-action-hud module creates it via getElementById). The
+      // #ib-hud-layer wrapper spans the viewport and is useless as an anchor.
+      // Fall back to beside the CTB panel. Position after a short settle so
+      // the window's own auto-sizing doesn't override it.
+      setTimeout(() => {
+        const actionMenu = document.getElementById("ib-action-root");
+        if (actionMenu) {
+          const rect = actionMenu.getBoundingClientRect();
+          this.setPosition({ left: rect.left, top: rect.bottom + 8 });
+        } else {
+          const ctb = CTBDisplay.getInstance();
+          if (ctb?.rendered) {
+            const { left, top, width } = ctb.position;
+            this.setPosition({ left: left + width + 4, top });
+          }
         }
-      }
+      }, 50);
     }
   }
   _tileDistance(tokenA, tokenB) {
@@ -7369,22 +7375,31 @@ Hooks.once("init", () => {
 // ═══════════════════════════════════════════════════════════
 // Shared by every popup/window render: always stack one z-index above whatever
 // else is currently open, instead of any fixed/hardcoded z-index value.
-function _bumpZIndexAboveOthers(app, fallback = 10000) {
-  // Works for both AppV1 (element is jQuery) and AppV2 (element is HTMLElement)
+function _bumpZIndexAboveOthers(app) {
+  // V14 keeps ONE shared z counter for both AppV1 and AppV2 windows:
+  // foundry.applications.api.ApplicationV2._maxZ. Core assigns
+  // ++_maxZ on render/bring-to-front for both frameworks. Writing arbitrary
+  // inflated style values breaks that ordering (core windows can never catch
+  // up) and AppV2 overwrites style z from its own position object anyway.
+  // So: advance the CORE counter and assign through it.
   const el = app.element?.[0] ?? (app.element instanceof HTMLElement ? app.element : null);
   if (!el) return;
-  const v1Els = Object.values(ui.windows ?? {})
-    .filter(w => w.rendered)
-    .map(w => w.element?.[0]);
-  const v2Els = [...(foundry.applications?.instances?.values?.() ?? [])]
-    .filter(w => w.rendered)
-    .map(w => (w.element instanceof HTMLElement ? w.element : w.element?.[0]));
-  const openEls = [...v1Els, ...v2Els].filter(e => e && e !== el);
-  const maxZ = openEls.reduce((max, e) => {
-    const z = parseInt(e.style.zIndex || window.getComputedStyle(e).zIndex, 10);
-    return Number.isFinite(z) ? Math.max(max, z) : max;
-  }, 0);
-  el.style.zIndex = String(maxZ > 0 ? maxZ + 1 : fallback);
+  try {
+    const AppV2 = foundry.applications?.api?.ApplicationV2;
+    const current = parseInt(el.style.zIndex, 10) || 0;
+    let z;
+    if (AppV2 && typeof AppV2._maxZ === "number") {
+      z = ++AppV2._maxZ;
+      if (z <= current) return; // already on top
+    } else {
+      z = current + 1;
+    }
+    // AppV2 windows re-apply z from their position object — keep it in sync
+    if (app.position && typeof app.position === "object") {
+      try { app.position.zIndex = z; } catch(e) {}
+    }
+    el.style.zIndex = String(z);
+  } catch(e) {}
 }
 
 Hooks.on("renderApplication", (app, html) => {

@@ -4241,7 +4241,7 @@
 #db-cutscene-viewer {
   position: fixed;
   inset: 0;
-  z-index: 99999;
+  z-index: 2000000;
   pointer-events: none;
 }
 .db-cutscene-backdrop {
