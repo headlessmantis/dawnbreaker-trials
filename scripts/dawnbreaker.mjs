@@ -7,6 +7,18 @@ function statMod(base) {
   return Math.floor(base / 3) - 3;
 }
 
+// Resolve the canvas token for an actor. Token-synthetic actors (unlinked
+// duplicates) resolve to their exact token; world actors fall back to the
+// first canvas match. Always prefer this over find-by-actor-id.
+function _actorToken(actor) {
+  if (!actor) return null;
+  if (actor.isToken && actor.token) {
+    const t = canvas.tokens?.placeables?.find(t => t.document.id === actor.token.id);
+    if (t) return t;
+  }
+  return canvas.tokens?.placeables?.find(t => t.actor?.id === actor.id) ?? null;
+}
+
 function kennelMult(value, kennel) {
   if (kennel <= 0) return 0;
   return Math.floor(value * (kennel / 100));
@@ -534,11 +546,14 @@ class DawnbreakerActor extends Actor {
   async _onUpdate(data, options, userId) {
     await super._onUpdate(data, options, userId);
 
-    // Sync status effects whenever conditions change
+    // Sync status effects whenever conditions change — for token-synthetic
+    // actors resolve the exact token, not the first duplicate sharing our id
     const newConditions = foundry.utils.getProperty(data, "system.conditions");
     if (!newConditions) return;
 
-    const token = canvas.tokens?.placeables?.find(t => t.actor?.id === this.id);
+    const token = (this.isToken && this.token
+      ? canvas.tokens?.placeables?.find(t => t.document.id === this.token.id)
+      : null) ?? canvas.tokens?.placeables?.find(t => t.actor?.id === this.id);
     if (!token) return;
 
     // Build set of labels that SHOULD be active
@@ -2211,7 +2226,7 @@ class DawnbreakerShopTablesApp extends foundry.appv1.api.Application {
     html.find(".db-table-delete-btn").click(async () => {
       if (!this._activeTableId) return;
       const tableName = _getShopTables().find(t => t.id === this._activeTableId)?.name ?? "this table";
-      const confirmed = await Dialog.confirm({ title: "Delete Table", content: `<p>Delete <strong>${tableName}</strong>? This cannot be undone.</p>` });
+      const confirmed = await (foundry.appv1?.applications?.Dialog ?? Dialog).confirm({ title: "Delete Table", content: `<p>Delete <strong>${tableName}</strong>? This cannot be undone.</p>` });
       if (!confirmed) return;
       const tables = _getShopTables().filter(t => t.id !== this._activeTableId);
       this._activeTableId = tables[0]?.id ?? null;
@@ -2486,16 +2501,12 @@ Hooks.once("ready", () => {
   // ── Socket listener ──────────────────────────────────────
   game.socket.on("system.dawnbreaker-trials", async (data) => {
     if (!game.user.isGM && !game.actors.get(data.actorId)?.isOwner) return;
-    if (game.user.isGM || !game.users.find(u => u.isGM && u.active)) {
-      const actorToken = data.tokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.tokenId) : null;
-      const actor = actorToken?.actor ?? game.actors.get(data.actorId);
-      if (!actor) return;
-      if (data.type === "applyDamage") {
-        await actor.update({ "system.hp.current": data.newHP });
-      } else if (data.type === "applyARDamage") {
-        await actor.update({ "system.ar.current": data.newAR });
-      }
-    }
+    // NOTE: applyDamage/applyARDamage are handled EXCLUSIVELY by the main
+    // dispatcher (registered in the later ready hook) which routes through
+    // window._dbApplyDamage. A direct-write branch here used to run FIRST,
+    // zeroing the pipeline's damage delta — which silently skipped reactions,
+    // breakpoints (shell/grip break), and added +1 phantom damage on every
+    // player-emitted attack. Do not re-add damage handling to this listener.
 
     // ── Ki Shield prompt — sent to target's owner ──────────
     if (data.type === "kiShieldPrompt" && !game.user.isGM) {
@@ -3696,7 +3707,9 @@ async function _applyStatusEffect(actor, label, active) {
   if (!label) return;
   const effect = CONFIG.statusEffects?.find(e => e.id === label);
   if (!effect) return;
-  const token = canvas.tokens?.placeables?.find(t => t.actor?.id === actor.id);
+  const token = (actor.isToken && actor.token
+    ? canvas.tokens?.placeables?.find(t => t.document.id === actor.token.id)
+    : null) ?? canvas.tokens?.placeables?.find(t => t.actor?.id === actor.id);
   if (!token) return;
   try {
     if (active) {
@@ -4042,7 +4055,7 @@ async function _applyDownCondition(actor, { suppressChat = false } = {}) {
 
   // Sacrificial Lamb — check if any adjacent ally Adept can spend KI to revive
   if (!canvas?.tokens?.placeables) return;
-  const downToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
+  const downToken = _actorToken(actor);
   if (!downToken) return;
   const size     = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
   const dx2      = Math.round(downToken.document.x / size);
@@ -4141,7 +4154,7 @@ const DB_REACTIONS = {
         // Check if any adjacent allied token has Doubleteam ability
         if (!canvas?.tokens?.placeables) return false;
         const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
-        const targetToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
+        const targetToken = _actorToken(actor);
         if (!targetToken) return false;
         const ax = Math.round(targetToken.document.x / size);
         const ay = Math.round(targetToken.document.y / size);
@@ -4162,7 +4175,7 @@ const DB_REACTIONS = {
       handler: async (actor, dmg, attackType) => {
         if (!canvas?.tokens?.placeables) return dmg;
         const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
-        const targetToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
+        const targetToken = _actorToken(actor);
         if (!targetToken) return dmg;
         const ax = Math.round(targetToken.document.x / size);
         const ay = Math.round(targetToken.document.y / size);
@@ -4224,7 +4237,7 @@ const DB_REACTIONS = {
       },
       handler: async (actor, dmg, attackType, sourceActorId = null, sourceTokenId = null) => {
         // Counter fires after damage is received — find enemy tokens in weapon reach
-        const defenderToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
+        const defenderToken = _actorToken(actor);
         if (!defenderToken) return dmg;
 
         const size        = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
@@ -4386,7 +4399,7 @@ const DB_REACTIONS = {
           }
         }
         // Crystal Crack animation (slot: "shell-crack")
-        const crackToken = canvas.tokens?.placeables?.find(t => t.actor?.id === actor.id);
+        const crackToken = _actorToken(actor);
         const crackSlot  = _getNPCAnimSlot(actor, "shell-crack");
         if (crackSlot?.file && crackToken) await window._playHitAnimation(crackToken, crackSlot.file, crackSlot.scale ?? 1.0, crackSlot.sound ?? "");
         return finalNewAR;
@@ -4666,7 +4679,7 @@ window._dbApplyDamage = async (data) => {
     // Moon Guardian — check if any ally has this actor shielded
     let moonDmg = reactionDmg;
     if (moonDmg > 0 && game.user.isGM) {
-      const defToken5 = canvas.tokens?.placeables?.find(t => t.actor?.id === actor.id);
+      const defToken5 = _actorToken(actor);
       const defDisp5  = defToken5?.document?.disposition ?? 1;
       for (const t of canvas.tokens.placeables) {
         if (!t.actor || t.document.disposition !== defDisp5) continue;
@@ -4759,7 +4772,7 @@ window._dbApplyDamage = async (data) => {
     // Soul Thread — check if any Sage has this actor tethered
     // If so, redirect damage to Sage's KI instead
     if (reactionDmg > 0 && game.user.isGM) {
-      const defenderToken4 = canvas.tokens?.placeables?.find(t => t.actor?.id === actor.id);
+      const defenderToken4 = _actorToken(actor);
       for (const stToken of canvas.tokens.placeables) {
         if (!stToken.actor || stToken.actor.id === actor.id) continue;
         const stData = stToken.actor.getFlag("dawnbreaker-trials", "soulThread");
@@ -4798,7 +4811,7 @@ window._dbApplyDamage = async (data) => {
     // Cover Fire — check if any allied sniper with active Cover Fire can AR counter
     if (reactionDmg > 0 && data.sourceActorId && game.user.isGM) {
       const attackerToken3 = canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
-      const defenderToken3 = canvas.tokens?.placeables?.find(t => t.actor?.id === actor.id);
+      const defenderToken3 = _actorToken(actor);
       if (attackerToken3 && defenderToken3) {
         const size    = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
         const defDisp = defenderToken3.document.disposition;
