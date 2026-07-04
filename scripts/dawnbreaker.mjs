@@ -5383,7 +5383,7 @@ class CTBDisplay extends foundry.appv1.api.Application {
     if (force) CTBDisplay._anchorToHUD(this);
   }
   static _anchorToHUD(app) {
-    const hud = document.querySelector("#ib-hud-layer");
+    const hud = document.getElementById("dbt-party-root") ?? document.getElementById("dbt-hud-root");
     const top = hud ? hud.getBoundingClientRect().top : 60;
     app.setPosition({ left: 350, top });
   }
@@ -6024,15 +6024,15 @@ class TargetSelector extends foundry.appv1.api.Application {
   async _render(force, options) {
     await super._render(force, options);
     if (force) {
-      // Anchor beneath the action menu (#ib-action-root — it's an ID, the
-      // stylish-action-hud module creates it via getElementById). The
-      // #ib-hud-layer wrapper spans the viewport and is useless as an anchor.
-      // Fall back to beside the CTB panel. Position after a short settle so
+      // Anchor beneath the action menu. Position after a short settle so
       // the window's own auto-sizing doesn't override it.
       setTimeout(() => {
-        const actionMenu = document.getElementById("ib-action-root");
-        if (actionMenu) {
-          const rect = actionMenu.getBoundingClientRect();
+        // DBT's own action menu (dawnbreaker-hud.mjs), falling back to the
+        // party HUD root, then the CTB panel
+        const anchor = document.getElementById("dbt-hud-root")
+          ?? document.getElementById("dbt-party-root");
+        if (anchor) {
+          const rect = anchor.getBoundingClientRect();
           this.setPosition({ left: rect.left, top: rect.bottom + 8 });
         } else {
           const ctb = CTBDisplay.getInstance();
