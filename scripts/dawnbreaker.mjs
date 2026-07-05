@@ -3366,11 +3366,105 @@ function _refreshDbNumberOverlay(token) {
   token.addChild(text);
 }
 
+// ── GM-only live stat overlay (HP/AR/KI) mounted on the token ──────────────
+// Renders ONLY on the GM's client so players still need Scan to read enemy
+// stats. Lets the GM see every unit's vitals at a glance without mass-scanning.
+function _refreshDbStatOverlay(token) {
+  // Tear down any existing overlay first
+  if (token._dbStatOverlay) {
+    try { token._dbStatOverlay.destroy({ children: true }); } catch(e) {}
+    token._dbStatOverlay = null;
+  }
+  if (!game.user.isGM) return;
+  const actor = token.actor;
+  if (!actor) return;
+  const sys = actor.system;
+  if (!sys?.hp) return; // only actors with the DBT resource schema
+
+  const hp = sys.hp ?? {}, ar = sys.ar ?? {}, ki = sys.ki ?? {};
+  const hasKI = (ki.max ?? 0) > 0;
+
+  const gridSize = canvas.grid?.sizeX ?? canvas.grid?.size ?? 100;
+  const tokenW   = (token.document?.width  ?? 1) * gridSize;
+  const tokenH   = (token.document?.height ?? 1) * gridSize;
+
+  const rows = [
+    { label: "HP", cur: hp.current ?? 0, max: hp.max ?? 0, color: 0xe05555 },
+    { label: "AR", cur: ar.current ?? 0, max: ar.max ?? 0, color: 0x5090e0 },
+  ];
+  if (hasKI) rows.push({ label: "KI", cur: ki.current ?? 0, max: ki.max ?? 0, color: 0x3de89a });
+
+  const fontSize = Math.max(9, Math.round(tokenW * 0.11));
+  const padX = 3, padY = 1, rowGap = 1;
+  const rowH = fontSize + padY * 2;
+  const panelH = rows.length * rowH + (rows.length - 1) * rowGap + padY * 2;
+
+  const container = new PIXI.Container();
+  container.zIndex = 998;
+  container.eventMode = "none";
+
+  // Measure widest row for panel width
+  const style = new PIXI.TextStyle({
+    fontFamily: "'Roboto Condensed', Arial Narrow, Arial, sans-serif",
+    fontSize, fontWeight: "700", fill: 0xffffff,
+    stroke: 0x000000, strokeThickness: Math.max(2, Math.round(fontSize * 0.16)),
+  });
+  const texts = rows.map(r => new PIXI.Text(`${r.label} ${r.cur}/${r.max}`, style.clone()));
+  const maxTextW = Math.max(...texts.map(t => t.width));
+  const panelW = maxTextW + padX * 2;
+
+  // Background panel
+  const bg = new PIXI.Graphics();
+  bg.beginFill(0x0a0c10, 0.72);
+  bg.lineStyle(1, 0xffffff, 0.12);
+  bg.drawRoundedRect(0, 0, panelW, panelH, 3);
+  bg.endFill();
+  container.addChild(bg);
+
+  // Rows: colored label swatch + value text
+  rows.forEach((r, i) => {
+    const y = padY + i * (rowH + rowGap);
+    const swatch = new PIXI.Graphics();
+    swatch.beginFill(r.color, 0.9);
+    swatch.drawRoundedRect(padX, y + 1, 3, rowH - 2, 1);
+    swatch.endFill();
+    container.addChild(swatch);
+    const t = texts[i];
+    t.style.fill = r.color;
+    t.position.set(padX, y + padY);
+    container.addChild(t);
+  });
+
+  // Anchor to the token's bottom-left, sitting just under it
+  container.position.set(2, tokenH + 2);
+  token._dbStatOverlay = container;
+  token.addChild(container);
+}
+
 // Draw / refresh overlay whenever a token is rendered
-Hooks.on("drawToken",    token => _refreshDbNumberOverlay(token));
+Hooks.on("drawToken",    token => { _refreshDbNumberOverlay(token); _refreshDbStatOverlay(token); });
 Hooks.on("refreshToken", token => {
-  if (token._dbNumOverlay) return; // already exists
-  _refreshDbNumberOverlay(token);
+  if (!token._dbNumOverlay)  _refreshDbNumberOverlay(token);
+  if (!token._dbStatOverlay) _refreshDbStatOverlay(token);
+});
+
+// Refresh the stat overlay whenever an actor's HP/AR/KI changes (GM client)
+Hooks.on("updateActor", (actor, changes) => {
+  if (!game.user.isGM) return;
+  const touched = foundry.utils.hasProperty(changes, "system.hp")
+    || foundry.utils.hasProperty(changes, "system.ar")
+    || foundry.utils.hasProperty(changes, "system.ki");
+  if (!touched) return;
+  // For an unlinked token's synthetic actor, refresh only that exact token;
+  // for a world actor, refresh every linked token sharing its id.
+  if (actor.isToken && actor.token) {
+    const t = canvas.tokens?.placeables?.find(p => p.document.id === actor.token.id);
+    if (t) _refreshDbStatOverlay(t);
+    return;
+  }
+  for (const t of canvas.tokens?.placeables ?? []) {
+    if (t.document.actorLink && t.actor?.id === actor.id) _refreshDbStatOverlay(t);
+  }
 });
 
 // Re-number and re-overlay all siblings when a token is placed
