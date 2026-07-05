@@ -3396,7 +3396,7 @@ function _refreshDbStatOverlay(token) {
   if (hasKI) vals.push({ cur: ki.current ?? 0, color: 0x4dff9a });
 
   const fontSize = Math.max(13, Math.round(tokenW * 0.20));
-  const gap = Math.round(fontSize * 0.55);
+  const gap = Math.round(fontSize * 0.30);
 
   const container = new PIXI.Container();
   container.zIndex = 998;
