@@ -3366,20 +3366,43 @@ function _refreshDbNumberOverlay(token) {
   token.addChild(text);
 }
 
-// ── GM-only live stat overlay (HP/AR/KI) mounted on the token ──────────────
-// Renders ONLY on the GM's client so players still need Scan to read enemy
-// stats. Lets the GM see every unit's vitals at a glance without mass-scanning.
+// ── Live stat overlay (current HP/AR/KI) mounted on the token ──────────────
+// Per-client toggle (default: GM on, players off). GMs see every unit; players
+// only see allies/friendly/owned tokens and enemies that have been Scanned —
+// preserving the Scan mechanic while letting the table read the board.
+window._dbStatOverlayEnabled = () => {
+  const v = localStorage.getItem("dbt-stat-overlay");
+  if (v === null) return game.user.isGM; // default: on for GM, off for players
+  return v === "1";
+};
+window._dbToggleStatOverlay = () => {
+  const now = !window._dbStatOverlayEnabled();
+  localStorage.setItem("dbt-stat-overlay", now ? "1" : "0");
+  for (const t of canvas.tokens?.placeables ?? []) _refreshDbStatOverlay(t);
+  window.DawnbreakerPartyHUD?.render?.();
+  return now;
+};
+
 function _refreshDbStatOverlay(token) {
   // Tear down any existing overlay first
   if (token._dbStatOverlay) {
     try { token._dbStatOverlay.destroy({ children: true }); } catch(e) {}
     token._dbStatOverlay = null;
   }
-  if (!game.user.isGM) return;
+  if (!window._dbStatOverlayEnabled()) return;
   const actor = token.actor;
   if (!actor) return;
   const sys = actor.system;
   if (!sys?.hp) return; // only actors with the DBT resource schema
+
+  // Player visibility scope: friendly/owned always; enemies only when Scanned
+  if (!game.user.isGM) {
+    const FRIENDLY = CONST.TOKEN_DISPOSITIONS.FRIENDLY;
+    const friendlyOrOwned = token.document.disposition === FRIENDLY || actor.isOwner;
+    const scanned = (sys.conditions ?? []).some(c =>
+      (c.name ?? "").toLowerCase() === "scan" || (c.label ?? "").toLowerCase() === "scan");
+    if (!friendlyOrOwned && !scanned) return;
+  }
 
   const hp = sys.hp ?? {}, ar = sys.ar ?? {}, ki = sys.ki ?? {};
   const hasKI = (ki.max ?? 0) > 0;
@@ -3438,12 +3461,13 @@ Hooks.on("refreshToken", token => {
   if (!token._dbStatOverlay) _refreshDbStatOverlay(token);
 });
 
-// Refresh the stat overlay whenever an actor's HP/AR/KI changes (GM client)
+// Refresh the stat overlay when an actor's HP/AR/KI changes, or when its Scan
+// condition is added/removed (so newly-scanned enemies reveal to players).
 Hooks.on("updateActor", (actor, changes) => {
-  if (!game.user.isGM) return;
   const touched = foundry.utils.hasProperty(changes, "system.hp")
     || foundry.utils.hasProperty(changes, "system.ar")
-    || foundry.utils.hasProperty(changes, "system.ki");
+    || foundry.utils.hasProperty(changes, "system.ki")
+    || foundry.utils.hasProperty(changes, "system.conditions");
   if (!touched) return;
   // For an unlinked token's synthetic actor, refresh only that exact token;
   // for a world actor, refresh every linked token sharing its id.

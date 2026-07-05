@@ -162,6 +162,7 @@ class DawnbreakerPartyHUD {
   static _prevStats       = new Map(); // actorId → { hp, ar, ki }
   static _removedFromCombat       = new Set(); // party actors removed mid-combat; restored after combat
   static _lastActiveTurnTokenId   = null;      // tracks last turn start to avoid re-firing
+  static _minimized = localStorage.getItem("dbt-party-hud-minimized") === "1";
 
   // ── Init ──────────────────────────────────────────────────────────────────
 
@@ -433,14 +434,21 @@ class DawnbreakerPartyHUD {
         <button class="dbt-cbtn dbt-cbtn-danger"  onclick="DawnbreakerPartyHUD._endCombat()">End Combat</button>
       </div>` : "";
 
+    const minimizeBtn = `<button class="dbt-party-minimize-btn" title="${this._minimized ? "Expand" : "Minimize"}" onclick="DawnbreakerPartyHUD._toggleMinimize()">${this._minimized ? "▸" : "▾"}</button>`;
+
+    const scanOn = window._dbStatOverlayEnabled?.() ?? false;
+    const scanBtn = `<button class="dbt-party-scan-btn${scanOn ? " active" : ""}" title="Toggle unit stat numbers on tokens (allies + scanned enemies)" onclick="window._dbToggleStatOverlay()"><i class="fa-solid fa-expand"></i></button>`;
+
     const headerHtml = inCombat
       ? `<div class="dbt-party-header dbt-party-header-combat" id="dbt-party-header">
            <span class="dbt-party-sys">DBT</span>
+           ${minimizeBtn}${scanBtn}
            <span class="dbt-party-title">SQUAD ENGAGED<span class="dbt-dot">.</span></span>
            <span class="dbt-party-count" id="dbt-party-count">${count}</span>
          </div>`
       : `<div class="dbt-party-header" id="dbt-party-header">
            <span class="dbt-party-sys">DBT</span>
+           ${minimizeBtn}${scanBtn}
            <span class="dbt-party-title">SQUAD<span class="dbt-dot">.</span> <span class="dbt-party-designation" id="dbt-party-designation" title="${game.user?.isGM ? "Double-click to rename" : ""}">${designation}</span></span>
            <span class="dbt-party-count" id="dbt-party-count">${count}</span>
          </div>`;
@@ -464,6 +472,8 @@ class DawnbreakerPartyHUD {
       savedTop  = root.style.top;
       savedLeft = root.style.left;
     }
+
+    root.classList.toggle("dbt-party-minimized", this._minimized);
 
     root.innerHTML = `
       ${headerHtml}
@@ -997,10 +1007,17 @@ class DawnbreakerPartyHUD {
     setTimeout(() => document.addEventListener("mousedown", outsideClick), 0);
   }
 
+  static _toggleMinimize() {
+    this._minimized = !this._minimized;
+    localStorage.setItem("dbt-party-hud-minimized", this._minimized ? "1" : "0");
+    this.render();
+  }
+
   static _makeDraggable(root) {
     const header = root.querySelector("#dbt-party-header");
     if (!header) return;
     header.addEventListener("mousedown", (e) => {
+      if (e.target.closest(".dbt-party-minimize-btn, .dbt-party-scan-btn, .dbt-party-designation")) return;
       e.preventDefault();
       const startX = e.clientX, startY = e.clientY;
       const { left: sl, top: st } = root.getBoundingClientRect();
@@ -1701,6 +1718,44 @@ const DBT_HUD_CSS = `
   letter-spacing: .1em;
   opacity: .7;
 }
+.dbt-party-minimize-btn {
+  background: none;
+  border: 1px solid var(--ark-border);
+  color: var(--ark-yellow);
+  font-size: .7em;
+  line-height: 1;
+  padding: 2px 5px;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 2px;
+  opacity: .75;
+  transition: opacity .15s, background .15s;
+}
+.dbt-party-minimize-btn:hover { opacity: 1; background: rgba(255,255,255,.06); }
+.dbt-party-scan-btn {
+  background: none;
+  border: 1px solid var(--ark-border);
+  color: var(--ark-cyan);
+  font-size: .7em;
+  line-height: 1;
+  padding: 2px 5px;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 2px;
+  opacity: .5;
+  margin-left: 3px;
+  transition: opacity .15s, background .15s, color .15s;
+}
+.dbt-party-scan-btn:hover { opacity: .85; background: rgba(255,255,255,.06); }
+.dbt-party-scan-btn.active {
+  opacity: 1;
+  color: var(--ark-cyan2);
+  border-color: var(--ark-cyan);
+  background: rgba(0,200,222,.14);
+  box-shadow: 0 0 6px rgba(0,200,222,.35);
+}
+#dbt-party-root.dbt-party-minimized .dbt-cards-list,
+#dbt-party-root.dbt-party-minimized .dbt-combat-bar { display: none; }
 .dbt-party-title {
   font-size: 1.15em;
   font-weight: 700;
