@@ -5278,6 +5278,10 @@ const CastQueue = {
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> resolved but no targets remain in area.</div>` });
         return;
       }
+    } else if (entry.callbackId) {
+      // Callback-driven ability (Prayer, Starfall, Zero, Lifeline): it handles
+      // its own targeting and posts its own results. No single target required.
+      resolvedTargets = [];
     } else {
       if (!target || (target.system.hp?.current ?? 0) <= 0) {
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> fizzled — target no longer valid.</div>` });
@@ -5285,8 +5289,10 @@ const CastQueue = {
       }
       resolvedTargets = [{ actor: target, token: targetToken ?? canvas.tokens.placeables.find(t => t.actor?.id === target.id) ?? null }];
     }
-    const targetNames = resolvedTargets.map(rt => rt.actor.name).join(", ");
-    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64d4ff;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#64d4ff;border-bottom:1px solid #3a3f4a;padding-bottom:5px;margin-bottom:8px;">⚡ ${entry.abilityIcon} ${entry.abilityName} — Resolves!</div><div style="font-size:12px;color:#7a8090;">${caster?.name} → ${targetNames}</div></div>` });
+    if (resolvedTargets.length) {
+      const targetNames = resolvedTargets.map(rt => rt.actor.name).join(", ");
+      await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64d4ff;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#64d4ff;border-bottom:1px solid #3a3f4a;padding-bottom:5px;margin-bottom:8px;">⚡ ${entry.abilityIcon} ${entry.abilityName} — Resolves!</div><div style="font-size:12px;color:#7a8090;">${caster?.name} → ${targetNames}</div></div>` });
+    }
     if (entry.formula && caster) {
       for (const { actor: targetActor, token: tTok } of resolvedTargets) {
         try {
