@@ -4339,21 +4339,5 @@
 .db-cutscene-trigger-btn::before { content: "\1F3AC"; font-size: 13px; }
 .db-cutscene-trigger-btn:hover { background: #c8a84b; color: #1a1c20; }
 
-/* ── "Add Cutscene" journal editor toolbar button ──────────── */
-.db-add-cutscene-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: 'Roboto Condensed', 'Arial Narrow', Arial, sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  color: #c8a84b;
-  background: #1a1c20;
-  border: 1px solid #c8a84b;
-  border-radius: 3px;
-  padding: 3px 10px;
-  margin: 4px 4px 4px 0;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.db-add-cutscene-btn:hover { background: #c8a84b; color: #1a1c20; }
+/* "Add Cutscene" is a real ProseMirror menu item — renders with core's
+   own menu styling, no custom CSS needed. */

@@ -5376,7 +5376,7 @@ window._endCutscene = function() {
 
 // ── Add Cutscene dialog — builds an @Cutscene[...]{...} enricher tag and
 // inserts it into the journal page's ProseMirror editor at the cursor ──
-async function _openAddCutsceneDialog(journalSheet) {
+async function _openAddCutsceneDialog(editorView) {
   const FP = foundry.applications?.apps?.FilePicker?.implementation ?? FilePicker;
 
   const content = `
@@ -5421,7 +5421,7 @@ async function _openAddCutsceneDialog(journalSheet) {
           if (!img) { ui.notifications.warn("Pick an image before inserting."); return; }
           const parts = [img, caption, sound].filter((p, i) => i === 0 || p);
           const tag = `@Cutscene[${parts.join("|")}]{${label}}`;
-          _insertIntoJournalEditor(journalSheet, tag);
+          _insertIntoProseMirror(editorView, tag);
         }
       },
       cancel: { label: "Cancel" }
@@ -5451,28 +5451,13 @@ async function _openAddCutsceneDialog(journalSheet) {
   }).render(true);
 }
 
-function _insertIntoJournalEditor(journalSheet, text) {
-  const editor = journalSheet?.editors?.["text.content"]?.instance;
-  const view = editor?.view;
-  if (view) {
-    // ProseMirror path — insert as plain text at the current cursor position
-    const { state, dispatch } = view;
-    const tr = state.tr.insertText(text, state.selection.from, state.selection.to);
-    dispatch(tr);
-    view.focus();
-    ui.notifications.info("Cutscene tag inserted.");
-    return;
-  }
-  // Fallback: editor not currently active (page in view mode) — append via
-  // the document's stored HTML content, wrapped in its own paragraph.
-  const page = journalSheet?.document;
-  if (page) {
-    const current = page.text?.content ?? "";
-    page.update({ "text.content": `${current}<p>${text}</p>` });
-    ui.notifications.info("Cutscene tag appended — open the page in edit mode to see it.");
-  } else {
-    ui.notifications.warn("Could not find an active editor to insert into. Copy this tag manually:\n" + text);
-  }
+function _insertIntoProseMirror(view, text) {
+  if (!view) { ui.notifications.warn("Could not find the editor to insert into. Copy this tag manually:\n" + text); return; }
+  const { state, dispatch } = view;
+  const tr = state.tr.insertText(text, state.selection.from, state.selection.to);
+  dispatch(tr);
+  view.focus();
+  ui.notifications.info("Cutscene tag inserted.");
 }
 
 class CTBDisplay extends foundry.appv1.api.Application {
@@ -7425,27 +7410,35 @@ Hooks.once("init", () => {
     },
   });
 
-  // ── "Add Cutscene" builder — button injected into journal text page editors ──
-  Hooks.on("renderJournalTextPageSheet", (app, html) => {
-    if (!game.user.isGM) return;
-    const root = html[0] ?? html;
-    const menu = root.querySelector(".editor-container .editor-menu, .editor .editor-menu, menu.editor-menu");
-    const editorEl = root.querySelector(".editor");
-    if (!editorEl || root.querySelector(".db-add-cutscene-btn")) return;
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "db-add-cutscene-btn";
-    btn.innerHTML = `🎬 Add Cutscene`;
-    btn.title = "Insert a cutscene trigger button at the cursor";
-    btn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      _openAddCutsceneDialog(app);
-    });
-
-    if (menu) menu.appendChild(btn);
-    else editorEl.insertAdjacentElement("beforebegin", btn);
-  });
+  // ── "Add Cutscene" builder — injected as a real ProseMirror menu item ──
+  // V14 journal editors are a <prose-mirror> web component with fully
+  // private internals (#editor, #activateEditor) — no DOM toolbar to append
+  // a plain button to, and no public way to reach the live EditorView from
+  // outside. The supported extension point is patching the menu item list
+  // that ProseMirrorMenu builds; cmd receives (state, dispatch, view)
+  // directly, so no private access is needed at all.
+  try {
+    const PMMenu = foundry.prosemirror?.ProseMirrorMenu;
+    if (PMMenu && !PMMenu.prototype._dbPatched) {
+      const original = PMMenu.prototype._getMenuItems;
+      PMMenu.prototype._getMenuItems = function () {
+        const items = original.call(this);
+        if (game.user.isGM) {
+          items.push({
+            action: "db-add-cutscene",
+            title: "Add Cutscene",
+            icon: '<i class="fa-solid fa-clapperboard fa-fw"></i>',
+            weight: 500,
+            menu: "insert",
+            scope: this.constructor._MENU_ITEM_SCOPES.TEXT,
+            cmd: (state, dispatch, view) => _openAddCutsceneDialog(view),
+          });
+        }
+        return items;
+      };
+      PMMenu.prototype._dbPatched = true;
+    }
+  } catch(e) { console.warn("Dawnbreaker | Could not patch ProseMirror menu:", e); }
 
   CONFIG.statusEffects = [
     { id: "down",       label: "Down",       icon: "icons/svg/skull.svg"      },
