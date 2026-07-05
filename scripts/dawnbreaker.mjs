@@ -5374,6 +5374,107 @@ window._endCutscene = function() {
   CutsceneViewer.hide();
 };
 
+// ── Add Cutscene dialog — builds an @Cutscene[...]{...} enricher tag and
+// inserts it into the journal page's ProseMirror editor at the cursor ──
+async function _openAddCutsceneDialog(journalSheet) {
+  const FP = foundry.applications?.apps?.FilePicker?.implementation ?? FilePicker;
+
+  const content = `
+    <div style="font-family:sans-serif;font-size:13px;display:flex;flex-direction:column;gap:10px;padding:6px 0;">
+      <div>
+        <label style="display:block;color:var(--db-gold,#c8a84b);font-weight:700;font-size:11px;margin-bottom:3px;">BUTTON LABEL</label>
+        <input id="db-ac-label" type="text" placeholder="e.g. Scene 1: Gate Opening" style="width:100%;padding:5px;"/>
+      </div>
+      <div>
+        <label style="display:block;color:var(--db-gold,#c8a84b);font-weight:700;font-size:11px;margin-bottom:3px;">IMAGE *</label>
+        <div style="display:flex;gap:6px;">
+          <input id="db-ac-img" type="text" placeholder="Pick an image..." style="flex:1;padding:5px;" readonly/>
+          <button type="button" id="db-ac-img-browse" style="flex-shrink:0;padding:5px 10px;">📁 Browse</button>
+        </div>
+      </div>
+      <div>
+        <label style="display:block;color:var(--db-gold,#c8a84b);font-weight:700;font-size:11px;margin-bottom:3px;">CAPTION (optional)</label>
+        <input id="db-ac-caption" type="text" placeholder="Text shown under the image" style="width:100%;padding:5px;"/>
+      </div>
+      <div>
+        <label style="display:block;color:var(--db-gold,#c8a84b);font-weight:700;font-size:11px;margin-bottom:3px;">SOUND (optional)</label>
+        <div style="display:flex;gap:6px;">
+          <input id="db-ac-sound" type="text" placeholder="Pick a sound..." style="flex:1;padding:5px;" readonly/>
+          <button type="button" id="db-ac-sound-browse" style="flex-shrink:0;padding:5px 10px;">📁 Browse</button>
+        </div>
+      </div>
+      <div id="db-ac-preview" style="font-size:11px;color:#888;padding-top:2px;">Fill in an image to preview the tag.</div>
+    </div>`;
+
+  const DialogClass = foundry.appv1?.applications?.Dialog ?? Dialog;
+  new DialogClass({
+    title: "🎬 Add Cutscene",
+    content,
+    buttons: {
+      insert: {
+        label: "Insert",
+        callback: (html) => {
+          const img     = html.find("#db-ac-img").val()?.trim();
+          const caption = html.find("#db-ac-caption").val()?.trim() ?? "";
+          const sound   = html.find("#db-ac-sound").val()?.trim() ?? "";
+          const label   = html.find("#db-ac-label").val()?.trim() || "Play Cutscene";
+          if (!img) { ui.notifications.warn("Pick an image before inserting."); return; }
+          const parts = [img, caption, sound].filter((p, i) => i === 0 || p);
+          const tag = `@Cutscene[${parts.join("|")}]{${label}}`;
+          _insertIntoJournalEditor(journalSheet, tag);
+        }
+      },
+      cancel: { label: "Cancel" }
+    },
+    default: "insert",
+    render: (html) => {
+      const updatePreview = () => {
+        const img = html.find("#db-ac-img").val()?.trim();
+        const preview = html.find("#db-ac-preview")[0];
+        preview.textContent = img ? `Will insert: @Cutscene[${img}...]{...}` : "Fill in an image to preview the tag.";
+        preview.style.color = img ? "#81c784" : "#888";
+      };
+      html.find("#db-ac-img-browse").on("click", () => {
+        new FP({
+          type: "image",
+          callback: (path) => { html.find("#db-ac-img").val(path); updatePreview(); }
+        }).render(true);
+      });
+      html.find("#db-ac-sound-browse").on("click", () => {
+        new FP({
+          type: "audio",
+          callback: (path) => { html.find("#db-ac-sound").val(path); }
+        }).render(true);
+      });
+      html.find("#db-ac-img").on("input", updatePreview);
+    }
+  }).render(true);
+}
+
+function _insertIntoJournalEditor(journalSheet, text) {
+  const editor = journalSheet?.editors?.["text.content"]?.instance;
+  const view = editor?.view;
+  if (view) {
+    // ProseMirror path — insert as plain text at the current cursor position
+    const { state, dispatch } = view;
+    const tr = state.tr.insertText(text, state.selection.from, state.selection.to);
+    dispatch(tr);
+    view.focus();
+    ui.notifications.info("Cutscene tag inserted.");
+    return;
+  }
+  // Fallback: editor not currently active (page in view mode) — append via
+  // the document's stored HTML content, wrapped in its own paragraph.
+  const page = journalSheet?.document;
+  if (page) {
+    const current = page.text?.content ?? "";
+    page.update({ "text.content": `${current}<p>${text}</p>` });
+    ui.notifications.info("Cutscene tag appended — open the page in edit mode to see it.");
+  } else {
+    ui.notifications.warn("Could not find an active editor to insert into. Copy this tag manually:\n" + text);
+  }
+}
+
 class CTBDisplay extends foundry.appv1.api.Application {
   static get defaultOptions() {
     return foundry.utils.mergeObject(super.defaultOptions, { id: "ctb-display", title: "Turn Order", template: "systems/dawnbreaker-trials/templates/ctb-display.html", width: 260, height: "auto", resizable: true, popOut: true, classes: ["ctb-display"], left: 10, top: 60 });
@@ -7322,6 +7423,28 @@ Hooks.once("init", () => {
       btn.textContent = label;
       return btn;
     },
+  });
+
+  // ── "Add Cutscene" builder — button injected into journal text page editors ──
+  Hooks.on("renderJournalTextPageSheet", (app, html) => {
+    if (!game.user.isGM) return;
+    const root = html[0] ?? html;
+    const menu = root.querySelector(".editor-container .editor-menu, .editor .editor-menu, menu.editor-menu");
+    const editorEl = root.querySelector(".editor");
+    if (!editorEl || root.querySelector(".db-add-cutscene-btn")) return;
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "db-add-cutscene-btn";
+    btn.innerHTML = `🎬 Add Cutscene`;
+    btn.title = "Insert a cutscene trigger button at the cursor";
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      _openAddCutsceneDialog(app);
+    });
+
+    if (menu) menu.appendChild(btn);
+    else editorEl.insertAdjacentElement("beforebegin", btn);
   });
 
   CONFIG.statusEffects = [
