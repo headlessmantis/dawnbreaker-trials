@@ -3388,55 +3388,45 @@ function _refreshDbStatOverlay(token) {
   const tokenW   = (token.document?.width  ?? 1) * gridSize;
   const tokenH   = (token.document?.height ?? 1) * gridSize;
 
-  const rows = [
-    { label: "HP", cur: hp.current ?? 0, max: hp.max ?? 0, color: 0xe05555 },
-    { label: "AR", cur: ar.current ?? 0, max: ar.max ?? 0, color: 0x5090e0 },
+  // Current values only, color-coded (no labels, no max)
+  const vals = [
+    { cur: hp.current ?? 0, color: 0xff5555 },
+    { cur: ar.current ?? 0, color: 0x66a8ff },
   ];
-  if (hasKI) rows.push({ label: "KI", cur: ki.current ?? 0, max: ki.max ?? 0, color: 0x3de89a });
+  if (hasKI) vals.push({ cur: ki.current ?? 0, color: 0x4dff9a });
 
-  const fontSize = Math.max(9, Math.round(tokenW * 0.11));
-  const padX = 3, padY = 1, rowGap = 1;
-  const rowH = fontSize + padY * 2;
-  const panelH = rows.length * rowH + (rows.length - 1) * rowGap + padY * 2;
+  const fontSize = Math.max(13, Math.round(tokenW * 0.20));
+  const gap = Math.round(fontSize * 0.55);
 
   const container = new PIXI.Container();
   container.zIndex = 998;
   container.eventMode = "none";
 
-  // Measure widest row for panel width
   const style = new PIXI.TextStyle({
     fontFamily: "'Roboto Condensed', Arial Narrow, Arial, sans-serif",
-    fontSize, fontWeight: "700", fill: 0xffffff,
-    stroke: 0x000000, strokeThickness: Math.max(2, Math.round(fontSize * 0.16)),
+    fontSize, fontWeight: "900", fill: 0xffffff,
+    stroke: 0x000000, strokeThickness: Math.max(3, Math.round(fontSize * 0.22)),
+    dropShadow: true, dropShadowColor: 0x000000, dropShadowBlur: 2,
+    dropShadowDistance: 0, dropShadowAlpha: 0.9,
   });
-  const texts = rows.map(r => new PIXI.Text(`${r.label} ${r.cur}/${r.max}`, style.clone()));
-  const maxTextW = Math.max(...texts.map(t => t.width));
-  const panelW = maxTextW + padX * 2;
+  const texts = vals.map(v => {
+    const t = new PIXI.Text(String(v.cur), style.clone());
+    t.style.fill = v.color;
+    t.anchor.set(0, 1); // baseline at bottom
+    return t;
+  });
 
-  // Background panel
-  const bg = new PIXI.Graphics();
-  bg.beginFill(0x0a0c10, 0.72);
-  bg.lineStyle(1, 0xffffff, 0.12);
-  bg.drawRoundedRect(0, 0, panelW, panelH, 3);
-  bg.endFill();
-  container.addChild(bg);
+  const rowW = texts.reduce((w, t) => w + t.width, 0) + gap * (texts.length - 1);
+  const bottomMargin = Math.max(2, Math.round(tokenH * 0.03));
+  let x = Math.round((tokenW - rowW) / 2); // centered horizontally
+  const baselineY = tokenH - bottomMargin; // justified to bottom, overlaid
 
-  // Rows: colored label swatch + value text
-  rows.forEach((r, i) => {
-    const y = padY + i * (rowH + rowGap);
-    const swatch = new PIXI.Graphics();
-    swatch.beginFill(r.color, 0.9);
-    swatch.drawRoundedRect(padX, y + 1, 3, rowH - 2, 1);
-    swatch.endFill();
-    container.addChild(swatch);
-    const t = texts[i];
-    t.style.fill = r.color;
-    t.position.set(padX, y + padY);
+  for (const t of texts) {
+    t.position.set(x, baselineY);
     container.addChild(t);
-  });
+    x += t.width + gap;
+  }
 
-  // Anchor to the token's bottom-left, sitting just under it
-  container.position.set(2, tokenH + 2);
   token._dbStatOverlay = container;
   token.addChild(container);
 }
