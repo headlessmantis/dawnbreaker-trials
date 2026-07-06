@@ -6666,7 +6666,49 @@ class TargetSelector extends foundry.appv1.api.Application {
       }
     }
   }
-  _clearRangeHighlight() { canvas.interface?.grid?.clearHighlightLayer("crucible.range"); }
+  _clearRangeHighlight() { canvas.interface?.grid?.clearHighlightLayer("crucible.range"); this._clearTargetLines(); }
+  // Draws a line from the attacker to each candidate target: green = in range
+  // & clear LOS, orange = in range but line of sight blocked, grey = out of range.
+  _showTargetLines() {
+    this._clearTargetLines();
+    const attackerToken = this._attackerToken ?? canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
+    if (!attackerToken?.center) return;
+    const ax = attackerToken.center.x, ay = attackerToken.center.y;
+    const attackerDisp = attackerToken.document.disposition;
+    const g = new PIXI.Graphics();
+    g.zIndex = 60;
+    g.eventMode = "none";
+    let drew = false;
+    for (const t of canvas.tokens.placeables) {
+      if (!t.actor || t.id === attackerToken.id || !t.center) continue;
+      const isEnemy = t.document.disposition !== attackerDisp;
+      if (this._targetType === "enemy" && !isEnemy) continue;
+      if (this._targetType === "ally"  &&  isEnemy) continue;
+      const dist = this._tileDistance(attackerToken, t);
+      const inRange = dist <= this._reach && dist >= this._minReach;
+      if (!inRange && this._reach >= 99) continue; // unlimited reach — don't draw to everyone
+      let losBlocked = false;
+      if (inRange && this._reach > 1 && !this._archingShot && window._checkRangedLOS) {
+        losBlocked = !!window._checkRangedLOS(attackerToken, t, false).blocked;
+      }
+      let color, alpha;
+      if (!inRange)        { color = 0x6a6f78; alpha = 0.28; }
+      else if (losBlocked) { color = 0xe07a30; alpha = 0.75; }
+      else                 { color = 0x3de89a; alpha = 0.85; }
+      g.lineStyle(2.5, color, alpha);
+      g.moveTo(ax, ay);
+      g.lineTo(t.center.x, t.center.y);
+      g.beginFill(color, Math.min(1, alpha + 0.1));
+      g.drawCircle(t.center.x, t.center.y, 5);
+      g.endFill();
+      drew = true;
+    }
+    if (drew) { canvas.interface.addChild(g); this._targetLines = g; }
+    else { g.destroy(); }
+  }
+  _clearTargetLines() {
+    if (this._targetLines) { try { this._targetLines.destroy(); } catch(e) {} this._targetLines = null; }
+  }
   getData() {
     const attacker = this._attacker, allTokens = canvas.tokens.placeables;
     const attackerToken = this._attackerToken ?? allTokens.find(t => t.actor?.id === attacker?.id);
@@ -6755,9 +6797,9 @@ class TargetSelector extends foundry.appv1.api.Application {
       (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); if (t) { t._onHoverIn?.(ev); if (this._range > 0) this._showAoEPreview(t); } },
       (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); t?._onHoverOut?.(ev); this._clearAoEPreview(); }
     );
-    setTimeout(() => { canvas.interface?.grid?.clearHighlightLayer("crucible.movement"); this._showRangeHighlight(); console.log(`TargetSelector | Showing range highlight, reach=${this._reach}, attacker=${this._attacker?.name}`); }, 150);
+    setTimeout(() => { canvas.interface?.grid?.clearHighlightLayer("crucible.movement"); this._showRangeHighlight(); this._showTargetLines(); }, 150);
   }
-  async close(...args) { this._clearAoEPreview(); this._clearRangeHighlight(); return super.close(...args); }
+  async close(...args) { this._clearAoEPreview(); this._clearRangeHighlight(); this._clearTargetLines(); return super.close(...args); }
   static select({ abilityName, abilityDesc, abilityIcon, targetType, attacker, attackerToken, tokenDoc, reach, minReach, range, shape, archingShot }) {
     return new Promise((resolve) => {
       // Resolve the specific canvas token placeable for the attacker.
