@@ -3354,9 +3354,35 @@ function _refreshDbStatOverlay(token) {
     x += t.width + gap;
   }
 
+  // Spent once-per-combat abilities — small strikethrough tags at the token top
+  // (GM only, since players shouldn't see enemy ability state).
+  if (game.user.isGM) {
+    const flags = actor.flags?.["dawnbreaker-trials"] ?? {};
+    const spent = _DB_ONCE_PER_COMBAT.filter(a => flags[a.flag]).map(a => a.label);
+    if (spent.length) {
+      const tagFont = Math.max(9, Math.round(tokenW * 0.11));
+      const tagStyle = new PIXI.TextStyle({
+        fontFamily: "'Roboto Condensed', Arial Narrow, Arial, sans-serif",
+        fontSize: tagFont, fontWeight: "700", fill: 0xe07a30,
+        stroke: 0x000000, strokeThickness: Math.max(2, Math.round(tagFont * 0.2)),
+      });
+      const tagText = new PIXI.Text(`⊘ ${spent.join(" · ")}`, tagStyle);
+      tagText.anchor.set(0.5, 0);
+      tagText.position.set(Math.round(tokenW / 2), Math.max(2, Math.round(tokenH * 0.02)));
+      container.addChild(tagText);
+    }
+  }
+
   token._dbStatOverlay = container;
   token.addChild(container);
 }
+// Once-per-combat abilities surfaced on the GM overlay when their flag is set
+const _DB_ONCE_PER_COMBAT = [
+  { flag: "ambushUsed",     label: "AMBUSH" },
+  { flag: "shellUsed",      label: "SHELL" },
+  { flag: "shatterUsed",    label: "SHATTER" },
+  { flag: "myrBandageUsed", label: "BANDAGE" },
+];
 
 // Draw / refresh overlay whenever a token is rendered
 Hooks.on("drawToken",    token => { _refreshDbNumberOverlay(token); _refreshDbStatOverlay(token); });
@@ -3371,7 +3397,8 @@ Hooks.on("updateActor", (actor, changes) => {
   const touched = foundry.utils.hasProperty(changes, "system.hp")
     || foundry.utils.hasProperty(changes, "system.ar")
     || foundry.utils.hasProperty(changes, "system.ki")
-    || foundry.utils.hasProperty(changes, "system.conditions");
+    || foundry.utils.hasProperty(changes, "system.conditions")
+    || foundry.utils.hasProperty(changes, "flags.dawnbreaker-trials"); // spent-ability tags
   if (!touched) return;
   // For an unlinked token's synthetic actor, refresh only that exact token;
   // for a world actor, refresh every linked token sharing its id.
