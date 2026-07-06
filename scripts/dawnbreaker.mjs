@@ -4061,12 +4061,12 @@ async function _applyDownCondition(actor, { suppressChat = false } = {}) {
 
   const conditions = foundry.utils.deepClone(actor.system.conditions ?? []);
   if (conditions.some(c => c.name?.toLowerCase() === "down")) return;
-  conditions.push({ name: "Down", label: "down", duration: 3, effect: "Unit is incapacitated. Removed from combat after 3 turns." });
+  conditions.push({ name: "Down", label: "down", duration: 4, effect: "Unit is incapacitated. Removed from combat after 4 turns." });
   await actor.update({ "system.conditions": conditions });
   await _applyStatusEffect(actor, "down", true);
   if (!suppressChat) {
     await ChatMessage.create({
-      content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">☠ <b>${actor.name}</b> is <span style="color:#e05555;font-weight:700;">Down!</span> — 3 turns remaining before removal from combat.</div>`
+      content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">☠ <b>${actor.name}</b> is <span style="color:#e05555;font-weight:700;">Down!</span> — 4 turns remaining before removal from combat.</div>`
     });
   }
 
@@ -5495,6 +5495,52 @@ window._endCutscene = function() {
   CutsceneViewer.hide();
 };
 
+// ── "Your Turn" spotlight banner + soft turn timer ──────────────────────────
+// Shows a big fading banner when a turn starts; if the local user owns one of
+// the active actors it reads "YOUR TURN" in gold and starts a small count-up
+// timer chip (soft pacing nudge, no enforcement). Turn timer clears when a
+// different unit's turn begins.
+let _dbTurnTimerInterval = null;
+function _dbClearTurnTimer() {
+  if (_dbTurnTimerInterval) { clearInterval(_dbTurnTimerInterval); _dbTurnTimerInterval = null; }
+  document.getElementById("dbt-turn-timer")?.remove();
+}
+function _dbShowTurnBanner(entries) {
+  if (!Array.isArray(entries) || !entries.length) return;
+  const mine = entries.some(e => game.actors.get(e.actorId)?.isOwner && !game.user.isGM);
+  const label = mine ? "YOUR TURN" : `${entries.map(e => e.name).join(", ")}`;
+  const sub   = mine ? entries.map(e => e.name).join(", ") : "TURN START";
+  const color = mine ? "#e8c86a" : "#8fb3d0";
+
+  // Banner element (self-removing)
+  document.getElementById("dbt-turn-banner")?.remove();
+  const el = document.createElement("div");
+  el.id = "dbt-turn-banner";
+  el.innerHTML = `<div class="dbt-tb-inner" style="border-color:${color};">
+      <div class="dbt-tb-main" style="color:${color};">${label}</div>
+      <div class="dbt-tb-sub">${sub}</div>
+    </div>`;
+  (document.getElementById("interface") ?? document.body).appendChild(el);
+  // Force reflow then animate in/out
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => { el.classList.remove("show"); }, 2200);
+  setTimeout(() => { el.remove(); }, 2900);
+
+  // Soft turn timer (only for the active player)
+  _dbClearTurnTimer();
+  if (mine) {
+    const chip = document.createElement("div");
+    chip.id = "dbt-turn-timer";
+    (document.getElementById("interface") ?? document.body).appendChild(chip);
+    let sec = 0;
+    const render = () => { chip.textContent = `⏱ ${sec}s`; chip.style.color = sec >= 90 ? "#e05555" : sec >= 60 ? "#e07a30" : "#8fb3d0"; };
+    render();
+    _dbTurnTimerInterval = setInterval(() => { sec++; render(); }, 1000);
+  }
+}
+window._dbShowTurnBanner = _dbShowTurnBanner;
+window._dbClearTurnTimer = _dbClearTurnTimer;
+
 // ── Add Cutscene dialog — builds an @Cutscene[...]{...} enricher tag and
 // inserts it into the journal page's ProseMirror editor at the cursor ──
 async function _openAddCutsceneDialog(editorView) {
@@ -6048,6 +6094,10 @@ const CTBEngine = {
       (foundry.audio?.AudioHelper ?? AudioHelper).play(
         { src: "sounds/combat/epic-turn-1hit.ogg", volume: 0.6, autoplay: true, loop: false }, true);
     } catch(e) {}
+    // "Your Turn" spotlight banner — broadcast to all clients + show locally
+    const bannerEntries = atTurn.map(c => ({ actorId: c.actorId, name: c.name }));
+    game.socket.emit("system.dawnbreaker-trials", { type: "turnBanner", entries: bannerEntries });
+    _dbShowTurnBanner(bannerEntries);
     for (const c of combatants) {
       const token = canvas.tokens.placeables.find(t => t.document?.id === c.tokenId || t.id === c.tokenId);
       if (!token) continue;
@@ -6412,6 +6462,10 @@ const CTBEngine = {
     // Abandon any unanswered reaction prompts so their timers can't fire later
     for (const h of _dbPendingReactions.values()) clearTimeout(h);
     _dbPendingReactions.clear();
+
+    // Clear the turn-timer chip on every client
+    game.socket.emit("system.dawnbreaker-trials", { type: "turnBannerClear" });
+    _dbClearTurnTimer();
 
     // ── Clear combat-scoped flags on every token so nothing carries into the
     //    next fight (boss breakpoints re-arm, Ambush refreshes, stacks reset) ──
@@ -7955,6 +8009,16 @@ Hooks.once("ready", () => {
         const cbCaster = cbCasterToken?.actor ?? game.actors.get(data.actorId);
         try { await cb(cbCaster); } catch(e) { console.warn("CastQueue | onResolve failed:", e); }
       }
+      return;
+    }
+
+    // ── Turn spotlight banner — broadcast to ALL clients ──
+    if (data.type === "turnBanner") {
+      _dbShowTurnBanner(data.entries ?? []);
+      return;
+    }
+    if (data.type === "turnBannerClear") {
+      _dbClearTurnTimer();
       return;
     }
 
