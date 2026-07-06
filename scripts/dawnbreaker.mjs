@@ -3154,9 +3154,14 @@ async function _showMovementRange(token, mvOverride = null) {
         try { wallBlocked = canvas.walls.checkCollision(new Ray(fromCenter, toCenter), { type: "move" }); } catch(e2) {}
       }
       if (wallBlocked) continue;
+      // Cannot move onto or through a hostile unit — block its FULL footprint
+      // (multi-tile enemies occupy width×height tiles, not just their corner).
       const blocked = allTokens.some(t => {
         if (isAlly(t)) return false;
-        return Math.round(t.document.x/size) === n.x && Math.round(t.document.y/size) === n.y;
+        const tx0 = Math.round(t.document.x / size), ty0 = Math.round(t.document.y / size);
+        const tw  = Math.max(1, Math.round(t.document.width  ?? 1));
+        const th  = Math.max(1, Math.round(t.document.height ?? 1));
+        return n.x >= tx0 && n.x < tx0 + tw && n.y >= ty0 && n.y < ty0 + th;
       });
       if (blocked) continue;
 
