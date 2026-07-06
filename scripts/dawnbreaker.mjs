@@ -4741,6 +4741,46 @@ window._dbUndo = async () => {
     </div>`, whisper: [game.user.id] });
 };
 
+// ── Combat stats tracker (GM authoritative — drives the end-of-combat recap) ──
+// null when not in combat; { [tokenId|actorId]: {name, dealt, taken, healed, downs} }
+let _combatStats = null;
+function _cbKey(actorId, tokenId) { return tokenId || actorId; }
+function _cbEntry(key, name) {
+  if (!_combatStats || !key) return null;
+  if (!_combatStats[key]) _combatStats[key] = { name: name ?? "Unknown", dealt: 0, taken: 0, healed: 0, downs: 0 };
+  else if (name) _combatStats[key].name = name;
+  return _combatStats[key];
+}
+function _recordCombatDamage(targetActor, targetTokenId, amount, downed, sourceActorId, sourceTokenId) {
+  if (!_combatStats || amount <= 0) return;
+  const tKey = _cbKey(targetActor.id, targetTokenId ?? (targetActor.isToken ? targetActor.token?.id : null));
+  const te = _cbEntry(tKey, targetActor.name);
+  if (te) { te.taken += amount; if (downed) te.downs += 1; }
+  if (sourceActorId) {
+    const srcName = (sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === sourceTokenId)?.actor?.name : null)
+      ?? game.actors.get(sourceActorId)?.name;
+    const se = _cbEntry(_cbKey(sourceActorId, sourceTokenId), srcName);
+    if (se) se.dealt += amount;
+  }
+}
+
+// GM-side healing observer: any HP increase during combat counts as "healed"
+// on the recipient (source-agnostic, so it captures every heal path reliably).
+const _dbHpBefore = new Map();
+Hooks.on("updateActor", (actor, changes) => {
+  if (!game.user.isGM || !_combatStats) return;
+  const newHP = foundry.utils.getProperty(changes, "system.hp.current");
+  if (newHP === undefined) return;
+  const key = actor.isToken ? actor.token?.id ?? actor.id : actor.id;
+  const prev = _dbHpBefore.get(key);
+  _dbHpBefore.set(key, newHP);
+  if (prev !== undefined && newHP > prev) {
+    const tokenId = actor.isToken ? actor.token?.id : null;
+    const e = _cbEntry(_cbKey(actor.id, tokenId), actor.name);
+    if (e) e.healed += (newHP - prev);
+  }
+});
+
 window._dbApplyDamage = async (data) => {
   // Resolve token actor first — prefer explicit tokenId so unlinked duplicate
   // tokens (sharing the same actorId) resolve to the exact instance targeted,
@@ -4832,6 +4872,7 @@ window._dbApplyDamage = async (data) => {
 
     const newHP = Math.max(0, currentHP - moonDmg);
     await actor.update({ "system.hp.current": newHP });
+    _recordCombatDamage(actor, data.tokenId, currentHP - newHP, newHP <= 0, data.sourceActorId, data.sourceTokenId);
     if (newHP <= 0) {
       await CastQueue.cancelForActor(actor.id, "was downed", actor.isToken ? actor.token?.id : (data?.tokenId ?? null));
       await _applyDownCondition(actor, { suppressChat: true });
@@ -4993,6 +5034,7 @@ window._dbApplyDamage = async (data) => {
     if (handled) return;
     const actualARDmg = currentAR - reactionAR;
     await actor.update({ "system.ar.current": reactionAR });
+    _recordCombatDamage(actor, data.tokenId, actualARDmg, false, data.sourceActorId, data.sourceTokenId);
     await _handleCrystalBurrowerBreakpoints(actor, currentAR, reactionAR);
     await _checkGolemGripBreak(actor, actualARDmg);
 
@@ -5695,11 +5737,179 @@ class CTBDisplay extends foundry.appv1.api.Application {
   static refresh() {}
 }
 
+// Combat-scoped flags that must NOT persist between encounters. Excludes
+// durable data (enhancements, growthPath, shop*, stored, healingBeacon,
+// nonCombatant, isInteractable — those are gear/economy/config, not per-fight).
+const _COMBAT_FLAGS = [
+  "aimBonus", "ambushUsed", "battlecrazeHits", "bleedStacks", "blessingOfLight",
+  "burrowed", "coverFireActive", "detainData", "detainState", "enchantBonus",
+  "gatheringStorm", "hauntData", "lightAura", "moonGuardian", "myrBandageUsed",
+  "myrWILBonus", "shatterUsed", "shellUsed", "soulThread", "stoicDamage",
+  "tailwindStacks", "tendonTargets", "tetherBonus", "tetherTarget", "tunnelAmbush",
+];
+
+async function _clearCombatFlags() {
+  const seen = new Set();
+  const actors = [];
+  for (const t of canvas.tokens?.placeables ?? []) {
+    const a = t.actor;
+    if (!a) continue;
+    const key = a.isToken ? a.token?.id : a.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    actors.push(a);
+  }
+  for (const a of actors) {
+    const flags = a.flags?.["dawnbreaker-trials"] ?? {};
+    for (const key of _COMBAT_FLAGS) {
+      if (flags[key] !== undefined) { try { await a.unsetFlag("dawnbreaker-trials", key); } catch(e) {} }
+    }
+  }
+}
+
+async function _postCombatRecap() {
+  const stats = _combatStats;
+  _combatStats = null; // stop tracking
+  if (!stats) return;
+  const rows = Object.values(stats).filter(s => s.dealt > 0 || s.taken > 0 || s.healed > 0);
+  if (!rows.length) return;
+
+  const mvp   = rows.reduce((a, b) => (b.dealt > a.dealt ? b : a));
+  const scape = rows.reduce((a, b) => (b.taken > a.taken ? b : a));
+  const medic = rows.reduce((a, b) => (b.healed > a.healed ? b : a), { healed: 0, name: null });
+
+  const esc = (s) => String(s ?? "").replace(/</g, "&lt;");
+  const tableRows = rows
+    .sort((a, b) => b.dealt - a.dealt)
+    .map(s => `<tr>
+        <td style="padding:2px 6px;color:#d4d8e0;">${esc(s.name)}</td>
+        <td style="padding:2px 6px;text-align:right;color:#e8c86a;font-weight:700;">${s.dealt}</td>
+        <td style="padding:2px 6px;text-align:right;color:#e57373;">${s.taken}</td>
+        <td style="padding:2px 6px;text-align:right;color:#81c784;">${s.healed}</td>
+        <td style="padding:2px 6px;text-align:center;color:${s.downs ? "#e05555" : "#7a8090"};">${s.downs || "—"}</td>
+      </tr>`).join("");
+
+  const badge = (icon, title, name, detail, color) => name
+    ? `<div style="flex:1;min-width:0;background:#222428;border:1px solid ${color};border-radius:4px;padding:6px 8px;text-align:center;">
+         <div style="font-size:18px;">${icon}</div>
+         <div style="font-size:9px;color:#7a8090;text-transform:uppercase;letter-spacing:1px;">${title}</div>
+         <div style="font-size:13px;font-weight:800;color:${color};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(name)}</div>
+         <div style="font-size:10px;color:#7a8090;">${detail}</div>
+       </div>` : "";
+
+  const badges = [
+    badge("🏆", "MVP", mvp.dealt > 0 ? mvp.name : null, `${mvp.dealt} dmg dealt`, "#e8c86a"),
+    badge("🩹", "Needed Most Help", scape.taken > 0 ? scape.name : null, `${scape.taken} dmg taken${scape.downs ? ` · ${scape.downs} down${scape.downs>1?"s":""}` : ""}`, "#e57373"),
+    badge("✚", "Field Medic", medic.healed > 0 ? medic.name : null, `${medic.healed} HP restored`, "#81c784"),
+  ].filter(Boolean).join("");
+
+  await ChatMessage.create({ content: `
+    <div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;">
+      <div style="font-size:14px;font-weight:700;color:#e8c86a;text-transform:uppercase;letter-spacing:2px;text-align:center;border-bottom:1px solid #3a3f4a;padding-bottom:6px;margin-bottom:8px;">📊 Combat Recap</div>
+      <div style="display:flex;gap:6px;margin-bottom:10px;">${badges}</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse;">
+        <thead><tr style="color:#7a8090;font-size:9px;text-transform:uppercase;letter-spacing:1px;">
+          <th style="padding:2px 6px;text-align:left;">Unit</th>
+          <th style="padding:2px 6px;text-align:right;">Dealt</th>
+          <th style="padding:2px 6px;text-align:right;">Taken</th>
+          <th style="padding:2px 6px;text-align:right;">Healed</th>
+          <th style="padding:2px 6px;text-align:center;">Downs</th>
+        </tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>` });
+}
+
+// ── GM flag / condition inspector ──────────────────────────────────────────
+// Opens a live panel for the selected (or hovered) token showing every
+// dawnbreaker-trials flag, active conditions, and key combat state. Invaluable
+// for adjudicating hidden mechanics mid-fight.
+window._dbInspector = function(token) {
+  if (!game.user.isGM) { ui.notifications.warn("GM only."); return; }
+  token = token
+    ?? canvas.tokens?.controlled?.[0]
+    ?? canvas.tokens?.hover
+    ?? null;
+  if (!token?.actor) { ui.notifications.warn("Select a token first."); return; }
+  const actor = token.actor;
+  const s = actor.system ?? {};
+  const esc = (v) => String(v ?? "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const flags = actor.flags?.["dawnbreaker-trials"] ?? {};
+  const flagRows = Object.entries(flags).filter(([k]) => !["stored"].includes(k));
+  const flagsHtml = flagRows.length
+    ? flagRows.map(([k, v]) => {
+        const val = (typeof v === "object") ? JSON.stringify(v) : String(v);
+        const combatFlag = _COMBAT_FLAGS.includes(k);
+        return `<tr>
+          <td style="padding:2px 6px;color:${combatFlag ? "#64d4ff" : "#c8a84b"};white-space:nowrap;">${esc(k)}</td>
+          <td style="padding:2px 6px;color:#d4d8e0;word-break:break-all;font-family:monospace;font-size:10px;">${esc(val)}</td>
+        </tr>`;
+      }).join("")
+    : `<tr><td colspan="2" style="padding:4px 6px;color:#7a8090;font-style:italic;">No flags set.</td></tr>`;
+
+  const conds = s.conditions ?? [];
+  const condsHtml = conds.length
+    ? conds.map(c => `<span style="display:inline-block;background:#222428;border:1px solid #3a3f4a;border-radius:3px;padding:1px 7px;margin:2px;font-size:11px;color:#e8c86a;">${esc(c.name || c.label)}${c.duration ? ` <span style="color:#7a8090;">(${c.duration}t)</span>` : ""}${c.instance ? ` <span style="color:#7a8090;">[${c.instance}h]</span>` : ""}${c.effect ? ` <span style="color:#64b5f6;">${esc(c.effect)}</span>` : ""}</span>`).join("")
+    : `<span style="color:#7a8090;font-style:italic;">None.</span>`;
+
+  const hp = s.hp ?? {}, ar = s.ar ?? {}, ki = s.ki ?? {};
+  const stateHtml = `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:11px;margin-bottom:2px;">
+      <span>❤ HP <b style="color:#e57373;">${hp.current ?? 0}/${hp.max ?? 0}</b></span>
+      <span>🛡 AR <b style="color:#64b5f6;">${ar.current ?? 0}/${ar.max ?? 0}</b></span>
+      ${(ki.max ?? 0) > 0 ? `<span>✨ KI <b style="color:#81c784;">${ki.current ?? 0}/${ki.max ?? 0}</b></span>` : ""}
+      <span>⚡ AP <b style="color:#c8a84b;">${s.ctbAP ?? 0}</b></span>
+      ${s.turnPhase ? `<span style="color:#7a8090;">${s.turnPhase.active ? "active" : "idle"}${s.turnPhase.moved ? " · moved" : ""}${s.turnPhase.acted ? " · acted" : ""}</span>` : ""}
+    </div>`;
+
+  const disp = { [-2]:"secret", [-1]:"hostile", [0]:"neutral", [1]:"friendly" }[token.document.disposition] ?? token.document.disposition;
+
+  const content = `
+    <div style="font-family:sans-serif;font-size:12px;color:#d4d8e0;">
+      <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid #3a3f4a;padding-bottom:6px;margin-bottom:8px;">
+        <img src="${token.document.texture?.src ?? actor.img}" style="width:36px;height:36px;border-radius:3px;object-fit:cover;"/>
+        <div>
+          <div style="font-weight:700;font-size:14px;color:#e8c86a;">${esc(token.document.name)}</div>
+          <div style="font-size:10px;color:#7a8090;">${esc(actor.type)} · ${disp} · ${token.document.actorLink ? "linked" : "unlinked"}</div>
+        </div>
+      </div>
+      ${stateHtml}
+      <div style="font-size:9px;color:#7a8090;text-transform:uppercase;letter-spacing:1px;margin:8px 0 3px;">Conditions</div>
+      <div>${condsHtml}</div>
+      <div style="font-size:9px;color:#7a8090;text-transform:uppercase;letter-spacing:1px;margin:8px 0 3px;">Flags <span style="color:#64d4ff;text-transform:none;">(blue = combat-scoped)</span></div>
+      <table style="width:100%;border-collapse:collapse;background:#141619;border:1px solid #2a2d33;border-radius:3px;">${flagsHtml}</table>
+    </div>`;
+
+  const DialogClass = foundry.appv1?.applications?.Dialog ?? Dialog;
+  new DialogClass({
+    title: `🔎 Inspector — ${token.document.name}`,
+    content,
+    buttons: {
+      refresh: { label: "🔄 Refresh", callback: () => window._dbInspector(token) },
+      clearCombat: {
+        label: "🧹 Clear Combat Flags",
+        callback: async () => {
+          for (const k of _COMBAT_FLAGS) {
+            if (flags[k] !== undefined) { try { await actor.unsetFlag("dawnbreaker-trials", k); } catch(e) {} }
+          }
+          ui.notifications.info(`Cleared combat flags on ${token.document.name}.`);
+        }
+      },
+      close: { label: "Close" },
+    },
+    default: "close",
+  }, { width: 380 }).render(true);
+};
+
 const CTBEngine = {
   async startCombat(scene) {
     if (!game.user.isGM) return;
     const tokens = scene?.tokens?.contents ?? canvas.tokens.placeables.map(t => t.document);
     if (!tokens.length) { ui.notifications.warn("No tokens on scene!"); return; }
+    // Begin fresh combat-stats tracking for the end-of-combat recap
+    _combatStats = {};
+    _dbHpBefore.clear();
     const combatants = [];
     for (const tokenDoc of tokens) {
       const actor = tokenDoc.actor;
@@ -6169,10 +6379,18 @@ const CTBEngine = {
       if (actor) await actor.update({ "system.ctbAP": 0 });
       if (token) await _highlightToken(token, false);
     }
+
+    // ── Clear combat-scoped flags on every token so nothing carries into the
+    //    next fight (boss breakpoints re-arm, Ambush refreshes, stacks reset) ──
+    await _clearCombatFlags();
+
     await _clearMovementRange();
     await CTB.setState({ phase: "idle", combatants: [] });
     CTBDisplay.refresh();
     await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:6px;padding:10px;font-family:sans-serif;text-align:center;color:#d4d8e0;"><div style="font-size:16px;font-weight:700;color:#e8c86a;text-transform:uppercase;letter-spacing:2px;">🏳 Combat Ended</div></div>` });
+
+    // ── End-of-combat recap ──
+    await _postCombatRecap();
 
     // Clear Myr WIL bonus
     await window._myrWILCleanup();

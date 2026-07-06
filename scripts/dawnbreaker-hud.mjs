@@ -237,6 +237,13 @@ class DawnbreakerPartyHUD {
         active: DawnbreakerPartyHUD.visible,
         onClick: (active) => DawnbreakerPartyHUD.setVisible(active),
       });
+      tokenCtrl.tools.push({
+        name:   "dbt-inspector",
+        title:  "Inspect selected token — flags & conditions",
+        icon:   "fas fa-magnifying-glass-chart",
+        button: true,
+        onClick: () => window._dbInspector?.(),
+      });
     });
   }
 
