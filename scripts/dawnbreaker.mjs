@@ -2503,107 +2503,11 @@ Hooks.on("canvasReady", () => {
 // ── REGISTER ─────────────────────────────────────────────────
 Hooks.once("ready", () => {
 
-  // ── Socket listener ──────────────────────────────────────
-  game.socket.on("system.dawnbreaker-trials", async (data) => {
-    if (!game.user.isGM && !game.actors.get(data.actorId)?.isOwner) return;
-    // NOTE: applyDamage/applyARDamage are handled EXCLUSIVELY by the main
-    // dispatcher (registered in the later ready hook) which routes through
-    // window._dbApplyDamage. A direct-write branch here used to run FIRST,
-    // zeroing the pipeline's damage delta — which silently skipped reactions,
-    // breakpoints (shell/grip break), and added +1 phantom damage on every
-    // player-emitted attack. Do not re-add damage handling to this listener.
-
-    // ── Ki Shield prompt — sent to target's owner ──────────
-    if (data.type === "kiShieldPrompt" && !game.user.isGM) {
-      const actor = game.actors.get(data.actorId);
-      if (!actor?.isOwner) return;
-
-      const currentKI  = actor.system.ki?.current ?? 0;
-      const incomingDmg = data.incomingDamage;
-
-      new (foundry.appv1?.applications?.Dialog ?? Dialog)({
-        title: "⚡ Ki Shield — Reaction",
-        content: `
-          <style>
-            .ki-shield-form { font-family:sans-serif; font-size:13px; padding:4px; }
-            .ki-info { background:#1a2030; border:1px solid #64b5f6; border-radius:4px; padding:8px 10px; margin-bottom:8px; color:#d4d8e0; }
-            .ki-info b { color:#64d4ff; }
-            .ki-row { display:grid; grid-template-columns:1fr 80px; align-items:center; gap:6px; margin-top:8px; }
-            .ki-row label { color:#d4d8e0; }
-            .ki-row input { background:#2a2d33; border:1px solid #3a3f4a; color:#d4d8e0; border-radius:3px; padding:3px 6px; width:100%; box-sizing:border-box; text-align:center; }
-          </style>
-          <form class="ki-shield-form">
-            <div class="ki-info">
-              ⚡ <b>Ki Shield</b> — Reaction<br/>
-              <div style="margin-top:4px;font-size:12px;color:#7a8090;">
-                Incoming damage: <b style="color:#e57373;">${incomingDmg} HP</b><br/>
-                Your KI: <b style="color:#81c784;">${currentKI}</b><br/>
-                Each KI spent reduces damage by 1.
-              </div>
-            </div>
-            <div class="ki-row">
-              <label>KI to spend (max ${Math.min(currentKI, incomingDmg)})</label>
-              <input id="ki-spend" type="number" value="${Math.min(currentKI, incomingDmg)}" min="0" max="${Math.min(currentKI, incomingDmg)}"/>
-            </div>
-          </form>
-        `,
-        buttons: {
-          use: {
-            icon: '<i class="fas fa-shield-alt"></i>',
-            label: "Use Ki Shield",
-            callback: async (html) => {
-              const kiSpend   = Math.min(Math.max(0, parseInt(html.find("#ki-spend").val()) || 0), Math.min(currentKI, incomingDmg));
-              const newKI     = Math.max(0, currentKI - kiSpend);
-              const reducedDmg = Math.max(0, incomingDmg - kiSpend);
-              await actor.update({ "system.ki.current": newKI });
-              await ChatMessage.create({
-                content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">
-                  ⚡ <b>${actor.name}</b> used Ki Shield — spent <span style="color:#64d4ff;font-weight:700;">${kiSpend} KI</span>.
-                  Damage reduced: <span style="color:#e57373;">${incomingDmg}</span> → <span style="color:#81c784;font-weight:700;">${reducedDmg}</span>
-                </div>`
-              });
-              // Send reduced damage back to GM to apply
-              game.socket.emit("system.dawnbreaker-trials", {
-                type: "kiShieldResolved",
-                actorId: data.actorId,
-                reducedDamage: reducedDmg,
-                attackType: data.attackType,
-                requestId: data.requestId,
-              });
-            }
-          },
-          skip: {
-            label: "Don't Use",
-            callback: () => {
-              // Send full damage back to GM
-              game.socket.emit("system.dawnbreaker-trials", {
-                type: "kiShieldResolved",
-                actorId: data.actorId,
-                reducedDamage: incomingDmg,
-                attackType: data.attackType,
-                requestId: data.requestId,
-              });
-            }
-          }
-        },
-        default: "use",
-      }).render(true);
-    }
-
-    // ── Ki Shield resolved — GM applies final damage ────────
-    if (data.type === "kiShieldResolved" && game.user.isGM) {
-      const actor = game.actors.get(data.actorId);
-      if (!actor) return;
-      const currentHP = actor.system.hp?.current ?? 0;
-      const newHP     = Math.max(0, currentHP - data.reducedDamage);
-      await actor.update({ "system.hp.current": newHP });
-      if (newHP <= 0) {
-        await CastQueue.cancelForActor(actor.id, "was downed", actor.isToken ? actor.token?.id : (data?.tokenId ?? null));
-        await _applyDownCondition(actor);
-      }
-      if (data.attackType) await _checkReactiveItems(actor, data.attackType);
-    }
-  });
+  // NOTE: this ready hook no longer registers a socket listener. It previously
+  // registered a SECOND listener that duplicated only kiShieldPrompt/
+  // kiShieldResolved — causing players to get two Ki Shield dialogs and the GM
+  // to apply the reduction twice (double damage). The listener in the later
+  // ready hook is the sole, complete dispatcher.
 
   // ── Register last attack type setting ───────────────────
   game.settings.register("dawnbreaker-trials", "lastAttackType", {
@@ -4249,11 +4153,15 @@ const DB_REACTIONS = {
         return !!owner;
       },
       handler: async (actor, dmg, attackType) => {
-        // Sends socket prompt to owner — damage applied asynchronously via kiShieldResolved
+        // Sends socket prompt to owner — damage applied asynchronously via
+        // kiShieldResolved, or by the safety timeout if the player never answers.
+        const requestId = foundry.utils.randomID();
+        _dbRegisterReactionTimeout(requestId, actor, dmg, attackType, "Ki Shield");
         game.socket.emit("system.dawnbreaker-trials", {
           type: "kiShieldPrompt", actorId: actor.id,
+          tokenId: actor.isToken ? actor.token?.id : null,
           incomingDamage: dmg, attackType,
-          requestId: foundry.utils.randomID(),
+          requestId,
         });
         return null; // null = handler takes over, don't apply damage here
       },
@@ -4475,10 +4383,13 @@ const DB_REACTIONS = {
         return !!owner;
       },
       handler: async (actor, dmg, attackType) => {
+        const requestId = foundry.utils.randomID();
+        _dbRegisterReactionTimeout(requestId, actor, dmg, attackType, "Soulbound Gale");
         game.socket.emit("system.dawnbreaker-trials", {
           type: "soulboundGalePrompt", actorId: actor.id,
+          tokenId: actor.isToken ? actor.token?.id : null,
           incomingDamage: dmg, attackType,
-          requestId: foundry.utils.randomID(),
+          requestId,
         });
         return null;
       },
@@ -4767,6 +4678,54 @@ function _recordCombatDamage(targetActor, targetTokenId, amount, downed, sourceA
 // GM-side healing observer: any HP increase during combat counts as "healed"
 // on the recipient (source-agnostic, so it captures every heal path reliably).
 const _dbHpBefore = new Map();
+
+// ── Reaction-prompt safety timeout ──────────────────────────────────────────
+// Damage-reducing reactions (Ki Shield, Soulbound Gale) send a prompt to a
+// player and the pipeline returns treating the hit as "handled" — the damage
+// isn't applied until the player answers. If they're AFK the attack silently
+// vanishes. The GM registers a timeout when initiating such a reaction; if no
+// response arrives, full damage is auto-applied and the prompt is abandoned.
+const _dbPendingReactions = new Map(); // requestId → setTimeout handle
+const REACTION_TIMEOUT_MS = 25000;
+
+async function _dbApplyReactionDamage(actor, damage, attackType, tokenId) {
+  const currentHP = actor.system.hp?.current ?? 0;
+  const newHP = Math.max(0, currentHP - damage);
+  await actor.update({ "system.hp.current": newHP });
+  if (newHP <= 0) {
+    await CastQueue.cancelForActor(actor.id, "was downed", actor.isToken ? actor.token?.id : (tokenId ?? null));
+    await _applyDownCondition(actor);
+  }
+  if (attackType) await _checkReactiveItems(actor, attackType);
+}
+
+function _dbRegisterReactionTimeout(requestId, actor, fullDamage, attackType, label) {
+  if (!game.user.isGM || !requestId) return;
+  const tokenId = actor.isToken ? actor.token?.id : null;
+  const actorId = actor.id;
+  const handle = setTimeout(async () => {
+    if (!_dbPendingReactions.has(requestId)) return;
+    _dbPendingReactions.delete(requestId);
+    // Re-resolve the actor fresh (state may have shifted during the wait)
+    const liveActor = (tokenId ? canvas.tokens?.placeables?.find(t => t.document.id === tokenId)?.actor : null)
+      ?? game.actors.get(actorId);
+    if (!liveActor) return;
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⏱ <b>${label}</b> — no response from <b>${liveActor.name}</b>'s player; full damage applied.</div>` });
+    await _dbApplyReactionDamage(liveActor, fullDamage, attackType, tokenId);
+  }, REACTION_TIMEOUT_MS);
+  _dbPendingReactions.set(requestId, handle);
+}
+
+// Returns true if the request was still pending (caller should proceed to
+// apply). Returns false if it already timed out (caller must ignore the late
+// reply to avoid double-applying).
+function _dbClearReactionTimeout(requestId) {
+  if (!requestId) return true; // untracked (e.g. GM-direct) — always proceed
+  const h = _dbPendingReactions.get(requestId);
+  if (h !== undefined) { clearTimeout(h); _dbPendingReactions.delete(requestId); return true; }
+  return false;
+}
+
 Hooks.on("updateActor", (actor, changes) => {
   if (!game.user.isGM || !_combatStats) return;
   const newHP = foundry.utils.getProperty(changes, "system.hp.current");
@@ -5967,6 +5926,8 @@ const CTBEngine = {
     // Begin fresh combat-stats tracking for the end-of-combat recap
     _combatStats = {};
     _dbHpBefore.clear();
+    for (const h of _dbPendingReactions.values()) clearTimeout(h);
+    _dbPendingReactions.clear();
     const combatants = [];
     for (const tokenDoc of tokens) {
       const actor = tokenDoc.actor;
@@ -6441,6 +6402,10 @@ const CTBEngine = {
       if (actor) await actor.update({ "system.ctbAP": 0 });
       if (token) await _highlightToken(token, false);
     }
+
+    // Abandon any unanswered reaction prompts so their timers can't fire later
+    for (const h of _dbPendingReactions.values()) clearTimeout(h);
+    _dbPendingReactions.clear();
 
     // ── Clear combat-scoped flags on every token so nothing carries into the
     //    next fight (boss breakpoints re-arm, Ambush refreshes, stacks reset) ──
@@ -8100,13 +8065,13 @@ Hooks.once("ready", () => {
               const reducedDmg = Math.max(0, incomingDmg - kiSpend);
               await actor.update({ "system.ki.current": newKI });
               await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${actor.name}</b> used Ki Shield — spent <span style="color:#64d4ff;font-weight:700;">${kiSpend} KI</span>. Damage: <span style="color:#e57373;">${incomingDmg}</span> → <span style="color:#81c784;font-weight:700;">${reducedDmg}</span></div>` });
-              game.socket.emit("system.dawnbreaker-trials", { type: "kiShieldResolved", actorId: data.actorId, reducedDamage: reducedDmg, attackType: data.attackType, requestId: data.requestId });
+              game.socket.emit("system.dawnbreaker-trials", { type: "kiShieldResolved", actorId: data.actorId, tokenId: data.tokenId, reducedDamage: reducedDmg, attackType: data.attackType, requestId: data.requestId });
             }
           },
           skip: {
             label: "Don't Use",
             callback: () => {
-              game.socket.emit("system.dawnbreaker-trials", { type: "kiShieldResolved", actorId: data.actorId, reducedDamage: incomingDmg, attackType: data.attackType, requestId: data.requestId });
+              game.socket.emit("system.dawnbreaker-trials", { type: "kiShieldResolved", actorId: data.actorId, tokenId: data.tokenId, reducedDamage: incomingDmg, attackType: data.attackType, requestId: data.requestId });
             }
           }
         },
@@ -8118,6 +8083,8 @@ Hooks.once("ready", () => {
     // ── Ki Shield resolved — GM applies final damage ────────
     if (data.type === "kiShieldResolved" && game.user.isGM) {
       if (!actor) return;
+      // Ignore a late reply if the safety timeout already applied full damage
+      if (!_dbClearReactionTimeout(data.requestId)) return;
       const currentHP = actor.system.hp?.current ?? 0;
       const newHP     = Math.max(0, currentHP - data.reducedDamage);
       await actor.update({ "system.hp.current": newHP });
@@ -8189,10 +8156,10 @@ Hooks.once("ready", () => {
             const kiSpent   = Math.min(parseInt(html.find("#ki-spend").val()) || 0, maxKI);
             const reduction = kiSpent * 2;
             const reduced   = Math.max(1, data.incomingDamage - reduction);
-            game.socket.emit("system.dawnbreaker-trials", { type: "soulboundGaleResolved", actorId: data.actorId, kiSpent, reducedDamage: reduced, attackType: data.attackType, requestId: data.requestId });
+            game.socket.emit("system.dawnbreaker-trials", { type: "soulboundGaleResolved", actorId: data.actorId, tokenId: data.tokenId, kiSpent, reducedDamage: reduced, attackType: data.attackType, requestId: data.requestId });
           }},
           skip: { label: "Take Full Damage", callback: () => {
-            game.socket.emit("system.dawnbreaker-trials", { type: "soulboundGaleResolved", actorId: data.actorId, kiSpent: 0, reducedDamage: data.incomingDamage, attackType: data.attackType, requestId: data.requestId });
+            game.socket.emit("system.dawnbreaker-trials", { type: "soulboundGaleResolved", actorId: data.actorId, tokenId: data.tokenId, kiSpent: 0, reducedDamage: data.incomingDamage, attackType: data.attackType, requestId: data.requestId });
           }}
         }, default: "spend"
       }).render(true);
@@ -8202,6 +8169,8 @@ Hooks.once("ready", () => {
     if (data.type === "soulboundGaleResolved" && game.user.isGM) {
       const sgActor = game.actors.get(data.actorId);
       if (!sgActor) return;
+      // Ignore a late reply if the safety timeout already applied full damage
+      if (!_dbClearReactionTimeout(data.requestId)) return;
       if (data.kiSpent > 0) {
         await sgActor.update({ "system.ki.current": Math.max(0, (sgActor.system.ki?.current ?? 0) - data.kiSpent) });
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #81c784;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">💨 <b>Soulbound Gale</b> — ${sgActor.name} spends ${data.kiSpent} KI to reduce damage by ${data.kiSpent * 2}! (${data.incomingDamage || "?"} → ${data.reducedDamage})</div>` });
