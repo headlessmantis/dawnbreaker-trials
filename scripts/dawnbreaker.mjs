@@ -4454,6 +4454,7 @@ const DB_REACTIONS = {
             await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#64b5f6;border-bottom:1px solid #3a3f4a;padding-bottom:4px;margin-bottom:8px;">💎 Crystal Shell — ${actor.name} CRACKS!</div><div style="font-size:12px;"><b>${srcActor.name}</b> takes <span style="color:#e57373;font-weight:700;">8 AR damage</span> from the shard spray!</div><div style="font-size:12px;margin-top:4px;">⚠ ${actor.name} PR reduced: 12 → 6. Shell is compromised.</div></div>` });
           }
         }
+        _dbBossBanner("💎 CRYSTAL SHELL SHATTERS", `${actor.name} — armor compromised`, "#64b5f6");
         // Crystal Crack animation (slot: "shell-crack")
         const crackToken = _actorToken(actor);
         const crackSlot  = _getNPCAnimSlot(actor, "shell-crack");
@@ -4523,6 +4524,7 @@ async function _checkGolemGripBreak(golemActor, actualARDmg) {
   }
 
   await ChatMessage.create({ content: `<div style="background:#1a2a10;border:2px solid #81c784;border-radius:4px;padding:10px 14px;font-family:sans-serif;font-size:15px;font-weight:900;color:#81c784;text-align:center;">🔓 ${golemActor.name}'s GRIP IS BROKEN — ${targetActor?.name ?? "the target"} is freed!</div>` });
+  _dbBossBanner("🔓 GRIP BROKEN", `${targetActor?.name ?? "The target"} breaks free of ${golemActor.name}`, "#81c784");
 }
 
 async function _handleCrystalBurrowerBreakpoints(actor, oldAR, newAR) {
@@ -4530,6 +4532,7 @@ async function _handleCrystalBurrowerBreakpoints(actor, oldAR, newAR) {
   if (newAR !== 0 || oldAR === 0) return;
   if (actor.getFlag("dawnbreaker-trials", "shatterUsed")) return;
   await actor.setFlag("dawnbreaker-trials", "shatterUsed", true);
+  _dbBossBanner("💥 SHELL SHATTER — SHARD BURST", `${actor.name} ruptures in a spray of crystal!`, "#e05555");
 
   // Shard Burst — 8 flat HP to ALL tokens within 2 tiles (no resistance)
   const bToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
@@ -5567,6 +5570,27 @@ function _dbShowTurnBanner(entries) {
 }
 window._dbShowTurnBanner = _dbShowTurnBanner;
 window._dbClearTurnTimer = _dbClearTurnTimer;
+
+// ── Boss breakpoint banner — dramatic full-width flash for phase transitions ──
+function _dbShowBossBanner(title, sub, color = "#e05555") {
+  document.getElementById("dbt-boss-banner")?.remove();
+  const el = document.createElement("div");
+  el.id = "dbt-boss-banner";
+  el.innerHTML = `<div class="dbt-bb-inner" style="--bb:${color};">
+      <div class="dbt-bb-title" style="color:${color};">${title}</div>
+      ${sub ? `<div class="dbt-bb-sub">${sub}</div>` : ""}
+    </div>`;
+  (document.getElementById("interface") ?? document.body).appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => el.classList.remove("show"), 3200);
+  setTimeout(() => el.remove(), 3900);
+}
+// GM calls this — broadcasts to all clients and shows locally.
+function _dbBossBanner(title, sub, color) {
+  if (game.user.isGM) game.socket.emit("system.dawnbreaker-trials", { type: "bossBanner", title, sub, color });
+  _dbShowBossBanner(title, sub, color);
+}
+window._dbBossBanner = _dbBossBanner;
 
 // ── Add Cutscene dialog — builds an @Cutscene[...]{...} enricher tag and
 // inserts it into the journal page's ProseMirror editor at the cursor ──
@@ -8177,6 +8201,10 @@ Hooks.once("ready", () => {
     }
     if (data.type === "turnBannerClear") {
       _dbClearTurnTimer();
+      return;
+    }
+    if (data.type === "bossBanner") {
+      _dbShowBossBanner(data.title, data.sub, data.color);
       return;
     }
 

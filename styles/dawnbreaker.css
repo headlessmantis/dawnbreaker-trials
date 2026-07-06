@@ -4393,3 +4393,45 @@
   padding: 3px 12px;
   text-shadow: 0 1px 4px rgba(0,0,0,0.9);
 }
+
+/* ═══════════════ Boss breakpoint banner ═══════════════ */
+#dbt-boss-banner {
+  position: fixed;
+  top: 34%;
+  left: 0;
+  width: 100%;
+  z-index: 95;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.94);
+  transition: opacity 0.4s ease, transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+#dbt-boss-banner.show { opacity: 1; transform: scale(1); }
+#dbt-boss-banner .dbt-bb-inner {
+  text-align: center;
+  padding: 16px 0;
+  background: linear-gradient(180deg, rgba(6,7,10,0) 0%, rgba(6,7,10,0.86) 45%, rgba(6,7,10,0) 100%);
+  border-top: 3px solid var(--bb, #e05555);
+  border-bottom: 3px solid var(--bb, #e05555);
+  box-shadow: 0 0 40px rgba(0,0,0,0.6);
+  animation: dbt-bb-flash 0.5s ease-out;
+}
+@keyframes dbt-bb-flash {
+  0%   { filter: brightness(2.4); }
+  100% { filter: brightness(1); }
+}
+#dbt-boss-banner .dbt-bb-title {
+  font-family: 'Bebas Neue', 'Arial Narrow', sans-serif;
+  font-size: 60px;
+  letter-spacing: 9px;
+  line-height: 1;
+  text-shadow: 0 3px 22px rgba(0,0,0,0.95), 0 0 30px var(--bb, #e05555);
+}
+#dbt-boss-banner .dbt-bb-sub {
+  font-family: 'Bebas Neue', 'Arial Narrow', sans-serif;
+  font-size: 19px;
+  letter-spacing: 4px;
+  color: #d4d8e0;
+  margin-top: 6px;
+  text-shadow: 0 2px 10px rgba(0,0,0,0.9);
+}

@@ -258,6 +258,13 @@ class DawnbreakerPartyHUD {
         button: true,
         onClick: () => window._dbLootDistribute?.(),
       });
+      tokenCtrl.tools.push({
+        name:   "dbt-undo",
+        title:  "Undo last action — restore HP/AR/KI/conditions/flags",
+        icon:   "fas fa-rotate-left",
+        button: true,
+        onClick: () => window._dbUndo?.(),
+      });
     });
   }
 
