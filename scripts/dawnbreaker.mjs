@@ -4765,7 +4765,8 @@ window._dbApplyDamage = async (data) => {
     // Tunnel Ambush — first hit after Burrower surfaces bypasses Guard and HP reactions
     let isTunnelAmbush = false;
     if (data.sourceActorId && rawDamage > 0) {
-      const srcTok = canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
+      const srcTok = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+        ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
       const srcAct = srcTok?.actor ?? game.actors.get(data.sourceActorId);
       if (srcAct?.getFlag("dawnbreaker-trials", "tunnelAmbush")) {
         isTunnelAmbush = true;
@@ -4877,7 +4878,8 @@ window._dbApplyDamage = async (data) => {
 
     // Rememberance — track HP damage DEALT by haunted actor
     if (reactionDmg > 0 && data.sourceActorId) {
-      const sourceActor = canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId)?.actor
+      const sourceActor = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId)?.actor : null)
+        ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId)?.actor
         ?? game.actors.get(data.sourceActorId);
       if (sourceActor) {
         const haunt = sourceActor.getFlag("dawnbreaker-trials", "hauntData");
@@ -4928,7 +4930,10 @@ window._dbApplyDamage = async (data) => {
 
     // Cover Fire — check if any allied sniper with active Cover Fire can AR counter
     if (reactionDmg > 0 && data.sourceActorId && game.user.isGM) {
-      const attackerToken3 = canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
+      // Prefer the exact attacking token — duplicate attackers share actorId,
+      // and Cover Fire must retaliate against the one that actually attacked.
+      const attackerToken3 = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+        ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
       const defenderToken3 = _actorToken(actor);
       if (attackerToken3 && defenderToken3) {
         const size    = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
@@ -5005,7 +5010,8 @@ window._dbApplyDamage = async (data) => {
 
     // Rememberance — track AR damage DEALT by haunted actor
     if (actualARDmg > 0 && data.sourceActorId) {
-      const sourceActor = canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId)?.actor
+      const sourceActor = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId)?.actor : null)
+        ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId)?.actor
         ?? game.actors.get(data.sourceActorId);
       if (sourceActor) {
         const haunt = sourceActor.getFlag("dawnbreaker-trials", "hauntData");
