@@ -244,6 +244,13 @@ class DawnbreakerPartyHUD {
         button: true,
         onClick: () => window._dbInspector?.(),
       });
+      tokenCtrl.tools.push({
+        name:   "dbt-long-rest",
+        title:  "Long Rest — full party recovery (1 Ration each)",
+        icon:   "fas fa-campground",
+        button: true,
+        onClick: () => window._dbLongRest?.(),
+      });
     });
   }
 

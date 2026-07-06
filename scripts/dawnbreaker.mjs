@@ -5902,6 +5902,63 @@ window._dbInspector = function(token) {
   }, { width: 380 }).render(true);
 };
 
+// ── Long Rest — downtime full recovery, one Ration per member ───────────────
+window._dbLongRest = function() {
+  if (!game.user.isGM) { ui.notifications.warn("GM only."); return; }
+
+  // Party = configured HUD party, else all player-owned characters/companions
+  let partyIds = [];
+  try { partyIds = game.settings.get("dawnbreaker-trials", "partyHudActors") ?? []; } catch(e) {}
+  let party = partyIds.map(id => game.actors.get(id)).filter(Boolean);
+  if (!party.length) party = game.actors.filter(a => (a.type === "character" || a.type === "companion") && a.hasPlayerOwner);
+  if (!party.length) { ui.notifications.warn("No party members found to rest."); return; }
+
+  const doRest = async (requireRation) => {
+    const rested = [], noRation = [];
+    for (const actor of party) {
+      const rations = actor.system.crafting?.rations ?? 0;
+      if (requireRation && rations < 1) { noRation.push(actor.name); continue; }
+      const update = {
+        "system.hp.current": actor.system.hp?.max ?? actor.system.hp?.current ?? 0,
+        "system.ar.current": actor.system.ar?.max ?? actor.system.ar?.current ?? 0,
+        "system.ki.current": actor.system.ki?.max ?? actor.system.ki?.current ?? 0,
+      };
+      if (requireRation) update["system.crafting.rations"] = Math.max(0, rations - 1);
+      // Revive the downed / clear death state
+      const conds = (actor.system.conditions ?? []).filter(c =>
+        (c.name ?? "").toLowerCase() !== "down" && (c.label ?? "").toLowerCase() !== "down");
+      update["system.conditions"] = conds;
+      await actor.update(update);
+      rested.push(actor.name);
+    }
+    const line = (label, arr, color) => arr.length
+      ? `<div style="font-size:11px;margin-top:3px;"><span style="color:${color};font-weight:700;">${label}:</span> ${arr.join(", ")}</div>` : "";
+    await ChatMessage.create({ content: `
+      <div style="background:#1a1c20;border:1px solid #81c784;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;">
+        <div style="font-size:14px;font-weight:700;color:#81c784;text-transform:uppercase;letter-spacing:2px;text-align:center;border-bottom:1px solid #3a3f4a;padding-bottom:6px;margin-bottom:6px;">🏕 Long Rest</div>
+        <div style="font-size:11px;color:#7a8090;text-align:center;">${requireRation ? "Each rested member consumed 1 Ration." : "GM bypass — no Rations consumed."}</div>
+        ${line("Fully Restored", rested, "#81c784")}
+        ${line("No Ration — not rested", noRation, "#e07a30")}
+      </div>` });
+    if (noRation.length) ui.notifications.warn(`${noRation.length} member(s) had no Ration and were not rested.`);
+  };
+
+  const DialogClass = foundry.appv1?.applications?.Dialog ?? Dialog;
+  new DialogClass({
+    title: "🏕 Long Rest",
+    content: `<div style="font-family:sans-serif;font-size:13px;padding:6px 0;color:#d4d8e0;">
+        <p>Fully restore <b>HP / AR / KI</b> and revive any downed member for the party (${party.length}).</p>
+        <p style="font-size:12px;color:#7a8090;">Standard rest consumes <b>1 Ration</b> per member. Members without a Ration are skipped.</p>
+      </div>`,
+    buttons: {
+      ration: { label: "🍖 Rest (use Rations)", callback: () => doRest(true) },
+      bypass: { label: "⭐ GM Bypass (free)",    callback: () => doRest(false) },
+      cancel: { label: "Cancel" },
+    },
+    default: "ration",
+  }).render(true);
+};
+
 const CTBEngine = {
   async startCombat(scene) {
     if (!game.user.isGM) return;
@@ -6019,6 +6076,11 @@ const CTBEngine = {
     for (const cast of resolvedCasts) await CastQueue.resolve(cast);
     const names = atTurn.map(c => `<b>${c.name}</b>`).join(", ");
     await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ It is now ${names}'s turn!</div>` });
+    // Turn-order audio cue — broadcast to every client so nobody misses their turn
+    try {
+      (foundry.audio?.AudioHelper ?? AudioHelper).play(
+        { src: "sounds/combat/epic-turn-1hit.ogg", volume: 0.6, autoplay: true, loop: false }, true);
+    } catch(e) {}
     for (const c of combatants) {
       const token = canvas.tokens.placeables.find(t => t.document?.id === c.tokenId || t.id === c.tokenId);
       if (!token) continue;
