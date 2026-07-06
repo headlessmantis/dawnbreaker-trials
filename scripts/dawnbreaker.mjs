@@ -3494,30 +3494,10 @@ Hooks.on("updateToken", async (tokenDoc, changes) => {
 });
 
 Hooks.on("updateToken", async (tokenDoc, changes) => {
-  if (changes.x !== undefined || changes.y !== undefined) {
-    // If this is the token whose movement range is displayed, redraw from new position
-    const tokenId = tokenDoc.id ?? tokenDoc._id;
-    if (_dbMoveActiveTokenId && _dbMoveActiveTokenId === tokenId) {
-      const token = canvas.tokens.placeables.find(t => t.document.id === tokenId || t.id === tokenId);
-      const actor = token?.actor;
-      if (token && actor) {
-        const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
-        const startX = actor.system.turnPhase?.startX ?? tokenDoc.x;
-        const startY = actor.system.turnPhase?.startY ?? tokenDoc.y;
-        const startTileX = Math.round(startX / size);
-        const startTileY = Math.round(startY / size);
-        const newX = changes.x ?? tokenDoc.x;
-        const newY = changes.y ?? tokenDoc.y;
-        const curTileX = Math.round(newX / size);
-        const curTileY = Math.round(newY / size);
-        const distMoved = Math.abs(curTileX - startTileX) + Math.abs(curTileY - startTileY);
-        const remaining = Math.max(0, _getMVTotal(actor) - distMoved);
-        // Small delay so token position updates before BFS runs
-        setTimeout(() => _showMovementRange(token, remaining), 50);
-      }
-    }
-    // else: no movement range was shown, nothing to update
-  }
+  // NOTE: the movement-range highlight deliberately does NOT redraw as the
+  // active token moves. It stays anchored to the tiles lit from the actor's
+  // starting position (full MV) until the turn ends, so the player always sees
+  // their original reachable area rather than a shrinking remainder.
 
   // Clear Cover Fire stance when token moves
   if ((changes.x !== undefined || changes.y !== undefined) && tokenDoc.actor) {
