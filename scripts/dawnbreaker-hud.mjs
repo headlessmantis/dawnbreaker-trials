@@ -251,6 +251,13 @@ class DawnbreakerPartyHUD {
         button: true,
         onClick: () => window._dbLongRest?.(),
       });
+      tokenCtrl.tools.push({
+        name:   "dbt-loot",
+        title:  "Distribute loot — Credits, materials & items to the party",
+        icon:   "fas fa-coins",
+        button: true,
+        onClick: () => window._dbLootDistribute?.(),
+      });
     });
   }
 

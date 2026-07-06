@@ -5914,14 +5914,103 @@ window._dbInspector = function(token) {
 };
 
 // ── Long Rest — downtime full recovery, one Ration per member ───────────────
+// Resolve the party roster (HUD list, else player-owned characters/companions)
+function _dbParty() {
+  let ids = [];
+  try { ids = game.settings.get("dawnbreaker-trials", "partyHudActors") ?? []; } catch(e) {}
+  let party = ids.map(id => game.actors.get(id)).filter(Boolean);
+  if (!party.length) party = game.actors.filter(a => (a.type === "character" || a.type === "companion") && a.hasPlayerOwner);
+  return party;
+}
+
+// ── Loot & reward distribution ──────────────────────────────────────────────
+window._dbLootDistribute = function() {
+  if (!game.user.isGM) { ui.notifications.warn("GM only."); return; }
+  const party = _dbParty();
+  if (!party.length) { ui.notifications.warn("No party members found."); return; }
+
+  const MATS = [
+    { key: "",             label: "— none —" },
+    { key: "ore",          label: "Ore" },
+    { key: "leather",      label: "Leather" },
+    { key: "fabric",       label: "Fabric" },
+    { key: "wood",         label: "Wood" },
+    { key: "rations",      label: "Rations" },
+    { key: "scrap",        label: "Scrap" },
+    { key: "runes",        label: "Runes" },
+    { key: "ephi",         label: "Ephi Shard" },
+    { key: "amynti",       label: "Amynti Shard" },
+    { key: "carmine",      label: "Carmine Shard" },
+    { key: "essenceFire",  label: "Fire Essence" },
+    { key: "essenceWater", label: "Water Essence" },
+    { key: "essenceEarth", label: "Earth Essence" },
+    { key: "essenceAir",   label: "Air Essence" },
+    { key: "essenceSpirit",label: "Spirit Essence" },
+  ];
+  const matOpts = MATS.map(m => `<option value="${m.key}">${m.label}</option>`).join("");
+
+  const content = `<div style="font-family:sans-serif;font-size:13px;color:#d4d8e0;display:flex;flex-direction:column;gap:8px;padding:4px 0;">
+      <div style="font-size:12px;color:#7a8090;">Distribute to the party (${party.length} member${party.length>1?"s":""}).</div>
+      <div><label style="color:var(--db-gold,#c8a84b);font-size:11px;font-weight:700;">CREDITS</label>
+        <input id="db-loot-credits" type="number" value="0" min="0" style="width:100%;padding:4px;"/></div>
+      <div style="display:flex;gap:6px;">
+        <div style="flex:1;"><label style="color:var(--db-gold,#c8a84b);font-size:11px;font-weight:700;">MATERIAL</label>
+          <select id="db-loot-mat" style="width:100%;padding:4px;">${matOpts}</select></div>
+        <div style="width:80px;"><label style="color:var(--db-gold,#c8a84b);font-size:11px;font-weight:700;">AMOUNT</label>
+          <input id="db-loot-matamt" type="number" value="0" min="0" style="width:100%;padding:4px;"/></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;"><input id="db-loot-split" type="checkbox"/> Split evenly (default: each member gets the full amount)</label>
+      <div><label style="color:var(--db-gold,#c8a84b);font-size:11px;font-weight:700;">NARRATIVE LOOT (optional)</label>
+        <input id="db-loot-note" type="text" placeholder="e.g. an ornate key, a sealed letter..." style="width:100%;padding:4px;"/></div>
+    </div>`;
+
+  const DialogClass = foundry.appv1?.applications?.Dialog ?? Dialog;
+  new DialogClass({
+    title: "💰 Distribute Loot",
+    content,
+    buttons: {
+      give: {
+        label: "Distribute",
+        callback: async (html) => {
+          let credits = Math.max(0, parseInt(html.find("#db-loot-credits").val()) || 0);
+          const matKey = html.find("#db-loot-mat").val();
+          let matAmt  = Math.max(0, parseInt(html.find("#db-loot-matamt").val()) || 0);
+          const note  = (html.find("#db-loot-note").val() || "").trim();
+          const split = html.find("#db-loot-split").prop("checked");
+          if (split) { credits = Math.floor(credits / party.length); matAmt = Math.floor(matAmt / party.length); }
+          if (!credits && !matAmt && !note) { ui.notifications.warn("Nothing to distribute."); return; }
+
+          for (const actor of party) {
+            const update = {};
+            if (credits) update["system.bio.credits"] = (actor.system.bio?.credits ?? 0) + credits;
+            if (matKey && matAmt) update[`system.crafting.${matKey}`] = (actor.system.crafting?.[matKey] ?? 0) + matAmt;
+            if (Object.keys(update).length) await actor.update(update);
+          }
+          const matLabel = MATS.find(m => m.key === matKey)?.label ?? "";
+          const parts = [];
+          if (credits) parts.push(`<span style="color:#c8a84b;font-weight:700;">${credits} Credits</span>`);
+          if (matKey && matAmt) parts.push(`<span style="color:#81c784;font-weight:700;">${matAmt} ${matLabel}</span>`);
+          await ChatMessage.create({ content: `
+            <div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;">
+              <div style="font-size:14px;font-weight:700;color:#e8c86a;text-transform:uppercase;letter-spacing:2px;text-align:center;border-bottom:1px solid #3a3f4a;padding-bottom:6px;margin-bottom:6px;">💰 Loot Distributed</div>
+              ${parts.length ? `<div style="font-size:12px;text-align:center;">${split ? "Each member received" : "Each member received"} ${parts.join(" + ")}.</div>` : ""}
+              ${note ? `<div style="font-size:12px;text-align:center;margin-top:4px;color:#a080ff;">✦ The party finds: <b>${note.replace(/</g,"&lt;")}</b></div>` : ""}
+              <div style="font-size:10px;color:#7a8090;text-align:center;margin-top:6px;">${party.map(a=>a.name).join(", ")}</div>
+            </div>` });
+          ui.notifications.info("Loot distributed.");
+        }
+      },
+      cancel: { label: "Cancel" },
+    },
+    default: "give",
+  }, { width: 420 }).render(true);
+};
+
 window._dbLongRest = function() {
   if (!game.user.isGM) { ui.notifications.warn("GM only."); return; }
 
   // Party = configured HUD party, else all player-owned characters/companions
-  let partyIds = [];
-  try { partyIds = game.settings.get("dawnbreaker-trials", "partyHudActors") ?? []; } catch(e) {}
-  let party = partyIds.map(id => game.actors.get(id)).filter(Boolean);
-  if (!party.length) party = game.actors.filter(a => (a.type === "character" || a.type === "companion") && a.hasPlayerOwner);
+  const party = _dbParty();
   if (!party.length) { ui.notifications.warn("No party members found to rest."); return; }
 
   const doRest = async (requireRation) => {
