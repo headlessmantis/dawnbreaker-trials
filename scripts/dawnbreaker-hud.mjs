@@ -151,6 +151,51 @@ Hooks.once("init", () => {
       },
     );
   });
+
+  // Scene controls — GM tools on the Tokens layer.
+  // MUST be registered at init: SceneControls builds its controls once, on first
+  // render (before "ready" fires in some cases), and caches the result. Registering
+  // this hook inside a "ready" callback misses that one-time build, so the tools
+  // never appear. See getActorContextOptions above for the same pattern.
+  // V14 uses object-keyed controls/tools (controls.tokens, tools:{}); V13 used
+  // arrays (controls.find(...), tools.push(...)). Support both.
+  Hooks.on("getSceneControlButtons", (controls) => {
+    if (!game.user.isGM) return;
+
+    const isV13Array = Array.isArray(controls);
+    const tokenCtrl = isV13Array
+      ? controls.find(c => c.name === "token" || c.name === "tokens")
+      : (controls.tokens ?? controls.token);
+    if (!tokenCtrl?.tools) return;
+
+    // Definitions shared across both API shapes
+    const defs = [
+      { name: "dbt-party-hud",  title: "Toggle Dawnbreaker Party HUD",                 icon: "fas fa-users",                 toggle: true, active: DawnbreakerPartyHUD.visible, run: (active) => DawnbreakerPartyHUD.setVisible(active) },
+      { name: "dbt-inspector",  title: "Inspect selected token — flags & conditions",  icon: "fas fa-magnifying-glass-chart", button: true, run: () => window._dbInspector?.() },
+      { name: "dbt-long-rest",  title: "Long Rest — full party recovery (1 Ration)",   icon: "fas fa-campground",            button: true, run: () => window._dbLongRest?.() },
+      { name: "dbt-loot",       title: "Distribute loot — Credits, materials, items",  icon: "fas fa-coins",                 button: true, run: () => window._dbLootDistribute?.() },
+      { name: "dbt-undo",       title: "Undo last action — restore HP/AR/KI/flags",    icon: "fas fa-rotate-left",           button: true, run: () => window._dbUndo?.() },
+    ];
+
+    let order = 100;
+    for (const d of defs) {
+      if (isV13Array) {
+        tokenCtrl.tools.push({
+          name: d.name, title: d.title, icon: d.icon,
+          ...(d.toggle ? { toggle: true, active: d.active } : { button: true }),
+          onClick: d.run,
+        });
+      } else {
+        // V14 object shape — button tools use onChange; toggles use active + onChange(event, active)
+        tokenCtrl.tools[d.name] = {
+          name: d.name, order: order++, title: d.title, icon: d.icon,
+          ...(d.toggle
+            ? { toggle: true, active: d.active, onChange: (_e, active) => d.run(active) }
+            : { button: true, onChange: () => d.run() }),
+        };
+      }
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,47 +268,8 @@ class DawnbreakerPartyHUD {
     // CTBDisplay is retired — no snap hook needed
 
     // Context menu hook registered at init (above) — nothing needed here
-
-    // Scene controls — GM tools on the Tokens layer.
-    // V14 uses object-keyed controls/tools (controls.tokens, tools:{}), while
-    // V13 used arrays (controls.find(...), tools.push(...)). Support both.
-    Hooks.on("getSceneControlButtons", (controls) => {
-      if (!game.user.isGM) return;
-
-      const isV13Array = Array.isArray(controls);
-      const tokenCtrl = isV13Array
-        ? controls.find(c => c.name === "token" || c.name === "tokens")
-        : (controls.tokens ?? controls.token);
-      if (!tokenCtrl?.tools) return;
-
-      // Definitions shared across both API shapes
-      const defs = [
-        { name: "dbt-party-hud",  title: "Toggle Dawnbreaker Party HUD",                 icon: "fas fa-users",                 toggle: true, active: DawnbreakerPartyHUD.visible, run: (active) => DawnbreakerPartyHUD.setVisible(active) },
-        { name: "dbt-inspector",  title: "Inspect selected token — flags & conditions",  icon: "fas fa-magnifying-glass-chart", button: true, run: () => window._dbInspector?.() },
-        { name: "dbt-long-rest",  title: "Long Rest — full party recovery (1 Ration)",   icon: "fas fa-campground",            button: true, run: () => window._dbLongRest?.() },
-        { name: "dbt-loot",       title: "Distribute loot — Credits, materials, items",  icon: "fas fa-coins",                 button: true, run: () => window._dbLootDistribute?.() },
-        { name: "dbt-undo",       title: "Undo last action — restore HP/AR/KI/flags",    icon: "fas fa-rotate-left",           button: true, run: () => window._dbUndo?.() },
-      ];
-
-      let order = 100;
-      for (const d of defs) {
-        if (isV13Array) {
-          tokenCtrl.tools.push({
-            name: d.name, title: d.title, icon: d.icon,
-            ...(d.toggle ? { toggle: true, active: d.active } : { button: true }),
-            onClick: d.run,
-          });
-        } else {
-          // V14 object shape — button tools use onChange; toggles use active + onChange(event, active)
-          tokenCtrl.tools[d.name] = {
-            name: d.name, order: order++, title: d.title, icon: d.icon,
-            ...(d.toggle
-              ? { toggle: true, active: d.active, onChange: (_e, active) => d.run(active) }
-              : { button: true, onChange: () => d.run() }),
-          };
-        }
-      }
-    });
+    // Scene controls hook (getSceneControlButtons) also registered at init —
+    // it must exist before SceneControls' one-time build, which "ready" is too late for.
   }
 
   // ── Party list ─────────────────────────────────────────────────────────────
