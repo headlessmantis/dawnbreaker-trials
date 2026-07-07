@@ -4298,7 +4298,9 @@ async function _applyDownCondition(actor, { suppressChat = false } = {}) {
   const beaconData = actor.getFlag("dawnbreaker-trials", "healingBeacon");
   if (beaconData?.active) {
     const ctbState = window.CTB.getState();
-    const token = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
+    // Token-first resolution — multiple deployed beacons share the same actorId,
+    // so an actor-id lookup could delete the WRONG beacon's token.
+    const token = _actorToken(actor);
     const tokenId = token?.document?.id ?? token?.id;
     const newCombatants = (ctbState.combatants ?? []).filter(c => c.tokenId !== tokenId);
     await CTB.setState({ ...ctbState, combatants: newCombatants });
@@ -7034,7 +7036,9 @@ const CTBEngine = {
       const BEACON_ANIM_SCALE = beaconData.healAnimScale ?? 1.0;
       const BEACON_ANIM_SOUND = beaconData.healAnimSound ?? "";
       const turnsUsed   = (beaconData.turns ?? 0) + 1;
-      const beaconToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
+      // Token-first: duplicate beacons share actorId — heal must pulse from THIS one
+      const beaconToken = (callerTokenId ? canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === callerTokenId) : null)
+        ?? _actorToken(actor);
       const size        = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
       const BEACON_RANGE = 7;
       const beaconDisp  = beaconToken?.document?.disposition ?? 1;
@@ -7159,12 +7163,18 @@ const CTBEngine = {
           await CTB.setState({ ...state, combatants: newCombatants });
           CTBDisplay.refresh();
         }
-        const dToken = canvas.tokens.placeables.find(t => t.actor?.id === actor.id);
+        const dToken = (callerTokenId ? canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === callerTokenId) : null)
+          ?? _actorToken(actor);
         if (dToken) await _highlightToken(dToken, false);
       }
     }
-    const idx = combatants?.findIndex(c => c.actorId === actor.id);
-    if (idx >= 0) combatants[idx].conditions = remaining;
+    // Sync ticked conditions to the exact CTB entry — tokenId first, since
+    // duplicate NPCs share actorId and the wrong entry would get the badges
+    const idx = combatants
+      ? (callerTokenId ? combatants.findIndex(c => c.tokenId === callerTokenId) : -1)
+      : -1;
+    const idxFinal = (idx >= 0) ? idx : (combatants?.findIndex(c => c.actorId === actor.id) ?? -1);
+    if (idxFinal >= 0) combatants[idxFinal].conditions = remaining;
 
     // DoT processing — fire any "dot:type:amount" effects on remaining conditions
     for (const c of remaining) {
@@ -9534,7 +9544,13 @@ Hooks.once("ready", () => {
     const state = CTB.getState();
     if (!state.combatants?.length) return;
     const combatants = foundry.utils.deepClone(state.combatants);
-    const idx = combatants.findIndex(c => c.actorId === actor.id);
+    // Duplicate-safe: unlinked token actors share actorId, so they must match
+    // strictly by their own tokenId (falling back to actorId would sync AP/
+    // conditions onto a SIBLING duplicate's CTB entry). Linked actors are
+    // unique, so actorId is safe for them.
+    const idx = actor.isToken
+      ? combatants.findIndex(c => c.tokenId === actor.token?.id)
+      : combatants.findIndex(c => c.actorId === actor.id);
     if (idx < 0) return;
 
     let dirty = false;
