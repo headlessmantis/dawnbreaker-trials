@@ -4861,6 +4861,9 @@ Hooks.on("updateActor", (actor, changes) => {
       _dbFloatText(token, String(name).toUpperCase(), 0xc79bff, { up: false, size: 20 });
     });
   }
+
+  // Re-evaluate the low-HP heartbeat whenever HP changes (GM-gated internally)
+  if (newHP !== undefined) _dbUpdateHeartbeat();
 });
 
 window._dbApplyDamage = async (data) => {
@@ -5682,8 +5685,89 @@ function _dbShowBossBanner(title, sub, color = "#e05555") {
 function _dbBossBanner(title, sub, color) {
   if (game.user.isGM) game.socket.emit("system.dawnbreaker-trials", { type: "bossBanner", title, sub, color });
   _dbShowBossBanner(title, sub, color);
+  // Boss-phase sting (GM drives; broadcasts to all)
+  _dbAudioSting("audioBossStingSrc", 0.8);
 }
 window._dbBossBanner = _dbBossBanner;
+
+// ── Audio atmosphere automation ──────────────────────────────────────────────
+// Reactive combat audio driven by events that already fire. All settings are
+// GM-configurable (Configure Settings); blank paths disable a given cue.
+function _dbAudioOn() {
+  try { return game.settings.get("dawnbreaker-trials", "audioAtmosphere") !== false; } catch (e) { return false; }
+}
+
+// One-shot sting from a settings path. GM broadcasts to all clients.
+function _dbAudioSting(settingKey, volume = 0.8) {
+  if (!game.user.isGM || !_dbAudioOn()) return;
+  let src = "";
+  try { src = game.settings.get("dawnbreaker-trials", settingKey) ?? ""; } catch (e) {}
+  if (!src) return;
+  (foundry.audio?.AudioHelper ?? AudioHelper).play({ src, volume, autoplay: true, loop: false }, true);
+}
+
+// Looping ambience — each client holds its own Sound handle so it can stop it.
+const _dbAudioLoops = new Map(); // key → Sound
+async function _dbAudioLoopStart(key, src, volume = 0.5) {
+  if (!src || _dbAudioLoops.has(key)) return;
+  try {
+    const sound = await (foundry.audio?.AudioHelper ?? AudioHelper).play(
+      { src, volume, autoplay: true, loop: true }, false); // local playback only
+    if (sound) _dbAudioLoops.set(key, sound);
+  } catch (e) { /* ignore */ }
+}
+function _dbAudioLoopStop(key) {
+  const s = _dbAudioLoops.get(key);
+  if (!s) return;
+  _dbAudioLoops.delete(key);
+  try { s.stop(); } catch (e) {}
+}
+
+// GM-side heartbeat monitor: loops while a living ally sits at/below the
+// critical HP %. Recomputed on every relevant HP change and at combat end, so
+// it naturally starts/stops on damage, heal, down, revive, and combat end.
+let _dbHeartbeatOn = false;
+function _dbUpdateHeartbeat() {
+  if (!game.user.isGM) return;
+  let src = "", pct = 25;
+  try {
+    src = game.settings.get("dawnbreaker-trials", "audioHeartbeatSrc") ?? "";
+    pct = game.settings.get("dawnbreaker-trials", "audioHeartbeatPct") ?? 25;
+  } catch (e) {}
+
+  const state = window.CTB?.getState?.() ?? {};
+  const inCombat = state.phase === "active" || state.phase === "ticking";
+
+  let critical = false;
+  if (_dbAudioOn() && src && inCombat) {
+    for (const t of canvas?.tokens?.placeables ?? []) {
+      // Only living allies (friendly disposition) count toward the heartbeat
+      if (t.document?.disposition !== CONST.TOKEN_DISPOSITIONS.FRIENDLY) continue;
+      const hp = t.actor?.system?.hp?.current ?? 0;
+      const max = t.actor?.system?.hp?.max ?? 0;
+      if (max > 0 && hp > 0 && (hp / max) * 100 <= pct) { critical = true; break; }
+    }
+  }
+
+  if (critical && !_dbHeartbeatOn) {
+    _dbHeartbeatOn = true;
+    game.socket.emit("system.dawnbreaker-trials", { type: "audioLoop", action: "start", key: "heartbeat", src, volume: 0.5 });
+    _dbAudioLoopStart("heartbeat", src, 0.5);
+  } else if (!critical && _dbHeartbeatOn) {
+    _dbHeartbeatOn = false;
+    game.socket.emit("system.dawnbreaker-trials", { type: "audioLoop", action: "stop", key: "heartbeat" });
+    _dbAudioLoopStop("heartbeat");
+  }
+}
+// Force-stop (combat end / cleanup)
+function _dbStopHeartbeat() {
+  if (!game.user.isGM) return;
+  if (_dbHeartbeatOn) {
+    _dbHeartbeatOn = false;
+    game.socket.emit("system.dawnbreaker-trials", { type: "audioLoop", action: "stop", key: "heartbeat" });
+  }
+  _dbAudioLoopStop("heartbeat");
+}
 
 // ── Add Cutscene dialog — builds an @Cutscene[...]{...} enricher tag and
 // inserts it into the journal page's ProseMirror editor at the cursor ──
@@ -6467,7 +6551,7 @@ const CTBEngine = {
         const winner = alreadyActive[0];
         combatants = combatants.map(c => (c.apCurrent >= 100 && !c.turnDone && c.tokenId !== winner.tokenId) ? { ...c, apCurrent: 99 } : c);
       }
-      await CTB.setState({ ...state, phase: "active", combatants }); CTBDisplay.refresh(); return;
+      await CTB.setState({ ...state, phase: "active", combatants }); CTBDisplay.refresh(); _dbUpdateHeartbeat(); return;
     }
 
     // Fractional tick — advance AP until exactly one actor hits 100, no overshooting
@@ -6512,6 +6596,8 @@ const CTBEngine = {
       (foundry.audio?.AudioHelper ?? AudioHelper).play(
         { src: "sounds/combat/epic-turn-1hit.ogg", volume: 0.6, autoplay: true, loop: false }, true);
     } catch(e) {}
+    // Re-evaluate heartbeat now that combat is active (ally may already be critical)
+    _dbUpdateHeartbeat();
     // "Your Turn" spotlight banner — broadcast to all clients + show locally
     const bannerEntries = atTurn.map(c => ({ actorId: c.actorId, name: c.name }));
     game.socket.emit("system.dawnbreaker-trials", { type: "turnBanner", entries: bannerEntries });
@@ -6885,6 +6971,9 @@ const CTBEngine = {
     game.socket.emit("system.dawnbreaker-trials", { type: "turnBannerClear" });
     _dbClearTurnTimer();
 
+    // Stop the low-HP heartbeat loop on every client
+    _dbStopHeartbeat();
+
     // ── Clear combat-scoped flags on every token so nothing carries into the
     //    next fight (boss breakpoints re-arm, Ambush refreshes, stacks reset) ──
     await _clearCombatFlags();
@@ -6897,6 +6986,9 @@ const CTBEngine = {
     await CTB.setState({ phase: "idle", combatants: [] });
     CTBDisplay.refresh();
     await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:6px;padding:10px;font-family:sans-serif;text-align:center;color:#d4d8e0;"><div style="font-size:16px;font-weight:700;color:#e8c86a;text-transform:uppercase;letter-spacing:2px;">🏳 Combat Ended</div></div>` });
+
+    // Victory sting (one-shot, broadcast to all)
+    _dbAudioSting("audioVictorySrc", 0.8);
 
     // ── End-of-combat recap ──
     await _postCombatRecap();
@@ -8446,6 +8538,33 @@ Hooks.once("ready", () => {
   game.settings.register("dawnbreaker-trials", "craftingLog", { scope: "world", config: false, type: String, default: "[]" });
   game.settings.register("dawnbreaker-trials", "growthPaths", { scope: "world", config: false, type: Array, default: [] });
 
+  // ── Audio atmosphere automation ──
+  game.settings.register("dawnbreaker-trials", "audioAtmosphere", {
+    name: "Audio Atmosphere Automation",
+    hint: "Reactive combat audio: low-HP heartbeat, boss-phase sting, and a victory sting on combat end.",
+    scope: "world", config: true, type: Boolean, default: true,
+  });
+  game.settings.register("dawnbreaker-trials", "audioHeartbeatSrc", {
+    name: "Low-HP Heartbeat Sound",
+    hint: "Looping sound played while a living ally is at or below the critical HP %. Leave blank to disable the heartbeat.",
+    scope: "world", config: true, type: String, default: "", filePicker: "audio",
+  });
+  game.settings.register("dawnbreaker-trials", "audioHeartbeatPct", {
+    name: "Heartbeat HP Threshold (%)",
+    hint: "A living ally at or below this % of max HP triggers the heartbeat.",
+    scope: "world", config: true, type: Number, default: 25,
+  });
+  game.settings.register("dawnbreaker-trials", "audioBossStingSrc", {
+    name: "Boss Phase Sting",
+    hint: "One-shot played when a boss breakpoint banner fires (Shard Burst, Frenzy, grip break, etc.). Blank to disable.",
+    scope: "world", config: true, type: String, default: "sounds/combat/epic-start-horn.ogg", filePicker: "audio",
+  });
+  game.settings.register("dawnbreaker-trials", "audioVictorySrc", {
+    name: "Victory Sting",
+    hint: "One-shot played when combat ends. Blank to disable.",
+    scope: "world", config: true, type: String, default: "sounds/combat/epic-next-horn.ogg", filePicker: "audio",
+  });
+
   _ensureEnhancementTablesJournal();
 
   game.socket.on("system.dawnbreaker-trials", async (data) => {
@@ -8487,6 +8606,14 @@ Hooks.once("ready", () => {
     }
     if (data.type === "bossBanner") {
       _dbShowBossBanner(data.title, data.sub, data.color);
+      return;
+    }
+
+    // ── Looping ambience (heartbeat) — start/stop on ALL clients so each
+    //    holds its own Sound handle and can stop it locally ──
+    if (data.type === "audioLoop") {
+      if (data.action === "start") _dbAudioLoopStart(data.key, data.src, data.volume ?? 0.5);
+      else                         _dbAudioLoopStop(data.key);
       return;
     }
 
