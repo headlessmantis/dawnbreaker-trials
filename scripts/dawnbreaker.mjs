@@ -3884,12 +3884,85 @@ function _dbKOEffect(token, name) {
   ticker.add(tick);
   setTimeout(finish, DUR + 300);
 
+  // Hard shake on a defeat
+  _dbCameraShake(18, 340);
+
   // Thud sound (each client plays its own copy)
   try {
     const atmos = game.settings.get("dawnbreaker-trials", "audioAtmosphere") !== false;
     const src   = game.settings.get("dawnbreaker-trials", "audioKOSrc") ?? "";
     if (atmos && src) (foundry.audio?.AudioHelper ?? AudioHelper).play({ src, volume: 0.7, autoplay: true, loop: false }, false);
   } catch (e) {}
+}
+
+// ── Camera shake ─────────────────────────────────────────────────────────────
+// Jitters the canvas stage position (pan uses pivot, so this is safe) with a
+// decaying random offset. Scaled by hit magnitude; hard shakes on KO / boss
+// phase. Client-scoped toggle so motion-sensitive players can opt out.
+const _dbShake = { active: false, baseX: 0, baseY: 0, until: 0, total: 260, intensity: 0, tick: null };
+function _dbCameraShake(intensity, duration = 260) {
+  try { if (game.settings.get("dawnbreaker-trials", "cameraShake") === false) return; } catch (e) {}
+  if (!canvas?.ready || !canvas.app?.ticker || !canvas.stage) return;
+  intensity = Math.max(2, Math.min(intensity, 22));
+  const stage = canvas.stage;
+  if (!_dbShake.active) {
+    _dbShake.active = true;
+    _dbShake.baseX = stage.position.x;
+    _dbShake.baseY = stage.position.y;
+    _dbShake.intensity = 0;
+    _dbShake.tick = () => {
+      const remain = _dbShake.until - performance.now();
+      if (remain <= 0) {
+        stage.position.set(_dbShake.baseX, _dbShake.baseY);
+        try { canvas.app.ticker.remove(_dbShake.tick); } catch (e) {}
+        _dbShake.active = false; _dbShake.tick = null;
+        return;
+      }
+      const mag = _dbShake.intensity * Math.max(0, remain / _dbShake.total);
+      stage.position.set(_dbShake.baseX + (Math.random() * 2 - 1) * mag, _dbShake.baseY + (Math.random() * 2 - 1) * mag);
+    };
+    canvas.app.ticker.add(_dbShake.tick);
+  }
+  // Extend / strengthen an in-flight shake without stacking drift
+  _dbShake.intensity = Math.max(_dbShake.intensity, intensity);
+  _dbShake.total = duration;
+  _dbShake.until = performance.now() + duration;
+}
+
+// ── Scan reveal sweep ────────────────────────────────────────────────────────
+// Cyan scan-line sweep + corner brackets over a token when it gains the Scan
+// condition, giving Scan a visible payoff. Runs on every client.
+function _dbScanSweep(token) {
+  const inter = canvas?.interface;
+  if (!token?.document || !inter || !canvas.app?.ticker || typeof PIXI === "undefined") return;
+  const gs = canvas.grid?.size ?? 100;
+  const w = token.w ?? gs, h = token.h ?? gs;
+  const container = new PIXI.Container();
+  container.position.set(token.document.x, token.document.y);
+  container.eventMode = "none";
+  inter.addChild(container);
+  const frame = new PIXI.Graphics(), line = new PIXI.Graphics();
+  container.addChild(frame); container.addChild(line);
+  const DUR = 750, start = performance.now(), ticker = canvas.app.ticker;
+  let done = false;
+  const finish = () => { if (done) return; done = true; try { ticker.remove(tick); } catch (e) {} try { container.destroy({ children: true }); } catch (e) {} };
+  const tick = () => {
+    const t = (performance.now() - start) / DUR;
+    if (t >= 1) return finish();
+    const y = t * h;
+    line.clear();
+    line.beginFill(0x33e0ff, 0.16).drawRect(0, Math.max(0, y - 8), w, 16).endFill();
+    line.lineStyle(3, 0x33e0ff, 0.9).moveTo(0, y).lineTo(w, y);
+    const a = Math.sin(Math.min(1, t * 2) * Math.PI) * 0.85, c = 11;
+    frame.clear();
+    frame.lineStyle(2, 0x33e0ff, a);
+    frame.moveTo(0, c).lineTo(0, 0).lineTo(c, 0);
+    frame.moveTo(w - c, 0).lineTo(w, 0).lineTo(w, c);
+    frame.moveTo(w, h - c).lineTo(w, h).lineTo(w - c, h);
+    frame.moveTo(c, h).lineTo(0, h).lineTo(0, h - c);
+  };
+  ticker.add(tick);
+  setTimeout(finish, DUR + 300);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -5003,8 +5076,14 @@ Hooks.on("updateActor", (actor, changes) => {
   const newHP = actor.system?.hp?.current;
   if (prev.hp !== null && newHP !== undefined && newHP !== prev.hp) {
     const d = newHP - prev.hp;
-    if (d < 0) _dbFloatText(token, `−${-d} HP`, 0xe05555, { size: dmgSize(d) });
-    else       _dbFloatText(token, `+${d} HP`,      0x81c784, { size: dmgSize(d) });
+    if (d < 0) {
+      _dbFloatText(token, `−${-d} HP`, 0xe05555, { size: dmgSize(d) });
+      // Camera shake scaled to the hit (only meaningful blows shake the screen)
+      const dmg = -d;
+      if (dmg >= 5) _dbCameraShake(Math.min(18, dmg * 0.5), 240);
+    } else {
+      _dbFloatText(token, `+${d} HP`, 0x81c784, { size: dmgSize(d) });
+    }
   }
 
   // AR change
@@ -5030,6 +5109,8 @@ Hooks.on("updateActor", (actor, changes) => {
     added.slice(0, 2).forEach((name) => {
       _dbFloatText(token, String(name).toUpperCase(), 0xc79bff, { up: false, size: 20 });
     });
+    // Scan reveal sweep when the Scan condition lands
+    if (added.some(n => String(n).toLowerCase() === "scan")) _dbScanSweep(token);
   }
 
   // Re-evaluate the low-HP heartbeat whenever HP changes (GM-gated internally)
@@ -5951,6 +6032,8 @@ function _dbShowBossBanner(title, sub, color = "#e05555") {
   requestAnimationFrame(() => el.classList.add("show"));
   setTimeout(() => el.classList.remove("show"), 3200);
   setTimeout(() => el.remove(), 3900);
+  // Hard shake to punctuate a boss phase shift
+  _dbCameraShake(16, 380);
 }
 // GM calls this — broadcasts to all clients and shows locally.
 function _dbBossBanner(title, sub, color) {
@@ -8914,6 +8997,12 @@ Hooks.once("ready", () => {
     name: "KO / Down Sound",
     hint: "Thud played on the cinematic KO effect when a unit drops. Blank for a visual-only KO.",
     scope: "world", config: true, type: String, default: "", filePicker: "audio",
+  });
+  // ── Camera shake (per-client so motion-sensitive players can opt out) ──
+  game.settings.register("dawnbreaker-trials", "cameraShake", {
+    name: "Camera Shake",
+    hint: "Screen shake on big hits, KOs, and boss phase shifts. Per-player setting.",
+    scope: "client", config: true, type: Boolean, default: true,
   });
 
   // ── Map ping keybinding ──
