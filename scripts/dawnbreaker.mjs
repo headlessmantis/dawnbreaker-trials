@@ -7119,12 +7119,25 @@ class TargetSelector extends foundry.appv1.api.Application {
     }
     return tiles;
   }
+  // Every tile a token's footprint occupies (large tokens span multiple tiles).
+  _footprintTiles(token) {
+    const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+    const x0 = Math.round(token.document.x/size), y0 = Math.round(token.document.y/size);
+    const w  = Math.max(1, Math.round(token.document.width  ?? 1));
+    const h  = Math.max(1, Math.round(token.document.height ?? 1));
+    const s = new Set();
+    for (let dx = 0; dx < w; dx++) for (let dy = 0; dy < h; dy++) s.add(`${x0+dx},${y0+dy}`);
+    return s;
+  }
   _getAffectedTokens(centerToken, allTokens) {
     if (this._range <= 0) return [centerToken];
     const attackerToken = this._attackerToken ?? canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
     const aoeTiles = this._getAoETiles(centerToken, attackerToken);
-    const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
-    return allTokens.filter(t => aoeTiles.has(`${Math.round(t.document.x/size)},${Math.round(t.document.y/size)}`));
+    // A token is caught if ANY tile of its footprint intersects the blast.
+    return allTokens.filter(t => {
+      for (const key of this._footprintTiles(t)) if (aoeTiles.has(key)) return true;
+      return false;
+    });
   }
   _showAoEPreview(centerToken) {
     canvas.interface.grid.clearHighlightLayer("crucible.aoe");
@@ -7139,6 +7152,38 @@ class TargetSelector extends foundry.appv1.api.Application {
     }
   }
   _clearAoEPreview() { canvas.interface?.grid?.clearHighlightLayer("crucible.aoe"); }
+  // Live "caught in the blast" readout — a floating list of every token the
+  // AoE currently covers, color-coded ally (green) / enemy (red) / self (gold),
+  // so you can confirm the hit before committing instead of eyeballing tiles.
+  _showAoEReadout(centerToken) {
+    this._clearAoEReadout();
+    if (this._range <= 0) return;
+    const affected = this._getAffectedTokens(centerToken, canvas.tokens.placeables);
+    if (!affected.length) return;
+    const attackerToken = this._attackerToken ?? canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
+    const attackerDisp  = attackerToken?.document?.disposition ?? 1;
+    const esc = (s) => String(s ?? "").replace(/</g, "&lt;");
+    const chips = affected.map(t => {
+      const isSelf = attackerToken && t.id === attackerToken.id;
+      const foe    = t.document.disposition !== attackerDisp;
+      const color  = isSelf ? "#c8a84b" : foe ? "#e57373" : "#81c784";
+      const dot    = isSelf ? "◆" : foe ? "▲" : "●";
+      return `<span style="color:${color};font-weight:600;white-space:nowrap;">${dot} ${esc(t.name)}</span>`;
+    }).join('<span style="color:#3a3f4a;">·</span> ');
+    const shapeLabel = String(this._shape).split(":")[0].toUpperCase();
+    const el = document.createElement("div");
+    el.id = "dbt-aoe-readout";
+    el.innerHTML = `<span style="color:#ffaa00;font-weight:700;margin-right:8px;">💥 ${shapeLabel} — hits ${affected.length}</span>${chips}`;
+    Object.assign(el.style, {
+      position: "fixed", top: "64px", left: "50%", transform: "translateX(-50%)",
+      zIndex: "9999", background: "rgba(18,20,24,0.94)", border: "1px solid #ffaa00",
+      borderRadius: "6px", padding: "7px 14px", fontFamily: "sans-serif", fontSize: "13px",
+      color: "#d4d8e0", pointerEvents: "none", maxWidth: "76vw", display: "flex",
+      flexWrap: "wrap", gap: "6px", alignItems: "center", boxShadow: "0 3px 12px rgba(0,0,0,0.5)",
+    });
+    (document.getElementById("interface") ?? document.body).appendChild(el);
+  }
+  _clearAoEReadout() { document.getElementById("dbt-aoe-readout")?.remove(); }
   _showRangeHighlight() {
     if (!canvas.interface?.grid) return;
     canvas.interface.grid.clearHighlightLayer("crucible.range");
@@ -7287,7 +7332,7 @@ class TargetSelector extends foundry.appv1.api.Application {
         if (selDist < this._minReach) { ui.notifications.warn(`Target is too close!`); return; }
       }
       const affectedTokens = this._getAffectedTokens(token, canvas.tokens.placeables);
-      this._clearAoEPreview(); this._clearRangeHighlight();
+      this._clearAoEPreview(); this._clearAoEReadout(); this._clearRangeHighlight();
       // Face attacker toward selected target (skip on self-target — the
       // zero-length vector would snap facing to East)
       if (attackerToken && token.id !== attackerToken.id) {
@@ -7308,12 +7353,12 @@ class TargetSelector extends foundry.appv1.api.Application {
       await Application.prototype.close.call(this);
     });
     html.find(".db-target-row").hover(
-      (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); if (t) { t._onHoverIn?.(ev); if (this._range > 0) this._showAoEPreview(t); } },
-      (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); t?._onHoverOut?.(ev); this._clearAoEPreview(); }
+      (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); if (t) { t._onHoverIn?.(ev); if (this._range > 0) { this._showAoEPreview(t); this._showAoEReadout(t); } } },
+      (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); t?._onHoverOut?.(ev); this._clearAoEPreview(); this._clearAoEReadout(); }
     );
     setTimeout(() => { canvas.interface?.grid?.clearHighlightLayer("crucible.movement"); this._showRangeHighlight(); this._showTargetLines(); }, 150);
   }
-  async close(...args) { this._clearAoEPreview(); this._clearRangeHighlight(); this._clearTargetLines(); return super.close(...args); }
+  async close(...args) { this._clearAoEPreview(); this._clearAoEReadout(); this._clearRangeHighlight(); this._clearTargetLines(); return super.close(...args); }
   static select({ abilityName, abilityDesc, abilityIcon, targetType, attacker, attackerToken, tokenDoc, reach, minReach, range, shape, archingShot }) {
     return new Promise((resolve) => {
       // Resolve the specific canvas token placeable for the attacker.
