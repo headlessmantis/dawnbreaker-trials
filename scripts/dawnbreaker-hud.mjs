@@ -174,6 +174,7 @@ Hooks.once("init", () => {
       { name: "dbt-inspector",  title: "Inspect selected token — flags & conditions",  icon: "fas fa-magnifying-glass-chart", button: true, run: () => window._dbInspector?.() },
       { name: "dbt-long-rest",  title: "Long Rest — full party recovery (1 Ration)",   icon: "fas fa-campground",            button: true, run: () => window._dbLongRest?.() },
       { name: "dbt-loot",       title: "Distribute loot — Credits, materials, items",  icon: "fas fa-coins",                 button: true, run: () => window._dbLootDistribute?.() },
+      { name: "dbt-cleanup",    title: "Condition cleanup — strip stale conditions",   icon: "fas fa-broom",                 button: true, run: () => window._dbConditionCleanup?.() },
       { name: "dbt-undo",       title: "Undo last action — restore HP/AR/KI/flags",    icon: "fas fa-rotate-left",           button: true, run: () => window._dbUndo?.() },
     ];
 
@@ -735,13 +736,16 @@ class DawnbreakerPartyHUD {
   }
 
   static _buildConditions(conditions) {
+    const escAttr = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
     return conditions
       .filter(c => c?.name?.trim())
       .map(c => {
         const label = c.label || c.name;
-        const dur   = c.duration > 0 ? ` (${c.duration}t)` : c.instance > 0 ? ` [${c.instance}]` : "";
         const abbr  = label.substring(0, 4).toUpperCase();
-        return `<span class="dbt-cond-badge" title="${label}${dur}">${abbr}</span>`;
+        // Rich hover tooltip: name + turns/hits/effect + rules description.
+        const dur   = c.duration > 0 ? ` (${c.duration}t)` : c.instance > 0 ? ` [${c.instance}]` : "";
+        const tip   = window._dbConditionTip ? window._dbConditionTip(c) : `${label}${dur}`;
+        return `<span class="dbt-cond-badge" title="${escAttr(tip)}">${abbr}</span>`;
       }).join("");
   }
 

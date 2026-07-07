@@ -4755,6 +4755,95 @@ Hooks.on("updateActor", (actor, changes) => {
   }
 });
 
+// ── Floating combat text ─────────────────────────────────────────────────────
+// Scrolling numbers pop over a token whenever its HP/AR changes or a new
+// condition is applied — from ANY source (pipeline, macros, socket, throws),
+// because every path ends in an actor.update(). Runs on every client so each
+// player sees the feedback over their own canvas. preUpdate captures the old
+// values (document still holds them); update reads the new values and floats
+// the deltas.
+const _dbVitalsPrev = new Map(); // document.uuid → { hp, ar, conds:[names] }
+
+function _dbFloatText(token, text, color, { dx = 0, up = true, size = 28 } = {}) {
+  const inter = canvas?.interface;
+  if (!token || !inter?.createScrollingText) return;
+  const c = token.center ?? { x: (token.x ?? 0) + (token.w ?? 0) / 2, y: (token.y ?? 0) + (token.h ?? 0) / 2 };
+  const A = CONST.TEXT_ANCHOR_POINTS;
+  try {
+    inter.createScrollingText(
+      { x: c.x + dx, y: c.y },
+      text,
+      {
+        anchor: up ? A.TOP : A.BOTTOM,
+        direction: up ? A.TOP : A.BOTTOM,
+        distance: (token.h ?? 100) * 0.8,
+        fontSize: size,
+        fill: color,
+        stroke: 0x000000,
+        strokeThickness: 4,
+        jitter: 0.25,
+        duration: 2000,
+      }
+    );
+  } catch (e) { /* interface not ready — ignore */ }
+}
+
+Hooks.on("preUpdateActor", (actor, changes) => {
+  const hasHP = foundry.utils.getProperty(changes, "system.hp.current") !== undefined;
+  const hasAR = foundry.utils.getProperty(changes, "system.ar.current") !== undefined;
+  const hasCo = foundry.utils.getProperty(changes, "system.conditions") !== undefined;
+  if (!hasHP && !hasAR && !hasCo) return;
+  _dbVitalsPrev.set(actor.uuid, {
+    hp: actor.system?.hp?.current ?? null,
+    ar: actor.system?.ar?.current ?? null,
+    conds: (actor.system?.conditions ?? []).map(c => String(c?.name ?? "").toLowerCase()),
+  });
+});
+
+Hooks.on("updateActor", (actor, changes) => {
+  const prev = _dbVitalsPrev.get(actor.uuid);
+  if (!prev) return;
+  _dbVitalsPrev.delete(actor.uuid);
+
+  const token = _actorToken(actor);
+  if (!token) return;
+
+  const dmgSize = (n) => Math.min(46, 24 + Math.abs(n) * 1.1);
+
+  // HP change
+  const newHP = actor.system?.hp?.current;
+  if (prev.hp !== null && newHP !== undefined && newHP !== prev.hp) {
+    const d = newHP - prev.hp;
+    if (d < 0) _dbFloatText(token, `−${-d}`, 0xe05555, { dx: -14, size: dmgSize(d) });
+    else       _dbFloatText(token, `+${d}`,      0x81c784, { dx: -14, size: dmgSize(d) });
+  }
+
+  // AR change
+  const newAR = actor.system?.ar?.current;
+  if (prev.ar !== null && newAR !== undefined && newAR !== prev.ar) {
+    const d = newAR - prev.ar;
+    if (d < 0) _dbFloatText(token, `−${-d} AR`, 0x66b2ff, { dx: 20, size: dmgSize(d) - 4 });
+    else       _dbFloatText(token, `+${d} AR`,      0x4fd6d6, { dx: 20, size: dmgSize(d) - 4 });
+  }
+
+  // Newly-added conditions
+  const nowConds = (actor.system?.conditions ?? []).map(c => String(c?.name ?? "").toLowerCase());
+  if (nowConds.length) {
+    const prevCounts = {};
+    for (const n of prev.conds) prevCounts[n] = (prevCounts[n] ?? 0) + 1;
+    const added = [];
+    for (const c of (actor.system?.conditions ?? [])) {
+      const n = String(c?.name ?? "").toLowerCase();
+      if ((prevCounts[n] ?? 0) > 0) { prevCounts[n]--; continue; }
+      added.push(c?.name ?? n);
+    }
+    // Float up to 2 new conditions so the token isn't spammed
+    added.slice(0, 2).forEach((name, i) => {
+      _dbFloatText(token, String(name).toUpperCase(), 0xc79bff, { dx: 0, up: false, size: 20 });
+    });
+  }
+});
+
 window._dbApplyDamage = async (data) => {
   // Resolve token actor first — prefer explicit tokenId so unlinked duplicate
   // tokens (sharing the same actorId) resolve to the exact instance targeted,
@@ -5787,6 +5876,190 @@ class CTBDisplay extends foundry.appv1.api.Application {
 // Combat-scoped flags that must NOT persist between encounters. Excludes
 // durable data (enhancements, growthPath, shop*, stored, healingBeacon,
 // nonCombatant, isInteractable — those are gear/economy/config, not per-fight).
+// ── Condition reference table ────────────────────────────────────────────────
+// Keyed by lowercased condition name. Drives hover tooltips (HUD + inspector).
+// Descriptions are concise game-rule summaries.
+const _DB_CONDITION_INFO = {
+  "down":           "Removed from combat. Auto-clears after 4 turns.",
+  "guard":          "Bracing — reduces incoming damage.",
+  "hp guard":       "Reduces incoming HP damage by its listed %.",
+  "hpguard":        "Reduces incoming HP damage by its listed %.",
+  "ar guard":       "Reduces incoming AR damage by its listed %.",
+  "arguard":        "Reduces incoming AR damage by its listed %.",
+  "scan":           "Target's stats are revealed.",
+  "poison":         "Damage over time each turn.",
+  "stun":           "Cannot act on its turn.",
+  "blind":          "Accuracy reduced; cannot target at range.",
+  "sleep":          "Incapacitated until it takes damage.",
+  "burning":        "Fire damage over time each turn.",
+  "frozen":         "Cannot act; immobilized.",
+  "bleeding":       "Loses HP at turn start (Bleeder stacks).",
+  "bleed":          "Loses HP at turn start (Bleeder stacks). Cleared by Soothe.",
+  "invisible":      "Cannot be targeted normally.",
+  "prone":          "Knocked down — movement and defense penalty.",
+  "paralysis":      "Cannot act or move.",
+  "flying":         "Airborne; ignores ground effects.",
+  "fly":            "Airborne; ignores ground effects.",
+  "cursed":         "Under a curse.",
+  "curse":          "Under a curse.",
+  "regen":          "Heals a small amount each turn.",
+  "disabled":       "Abilities are disabled.",
+  "crippled":       "Movement range reduced.",
+  "immovable":      "Rooted/grappled — cannot be moved.",
+  "threatened":     "Marked and under threat.",
+  "weakened":       "Outgoing damage reduced by its listed amount.",
+  "hasted":         "Increased speed / AP gain.",
+  "slowed":         "Reduced speed / AP gain.",
+  "frenzy":         "Boss rage — STR & BRK up, AR reduced.",
+  "ravager frenzy": "Deeper rage — higher STR & BRK, greater AR loss.",
+  "light aura":     "Grants PR/MR bonus. Cancelled when the bearer takes HP damage.",
+  "aura":           "An active aura effect.",
+  "shimmer":        "Shimmering Scales — −5 incoming HP damage while below 50% HP.",
+};
+
+// Build a human-readable tooltip for one condition object.
+window._dbConditionTip = function(cond) {
+  if (!cond) return "";
+  const name = String(cond.name ?? cond.label ?? "").trim();
+  const key  = name.toLowerCase();
+  let desc = _DB_CONDITION_INFO[key] ?? _DB_CONDITION_INFO[String(cond.label ?? "").toLowerCase()] ?? "";
+  // Effect-derived detail
+  const eff = String(cond.effect ?? "");
+  const parts = [];
+  if (typeof cond.duration === "number" && cond.duration > 0 && cond.duration < 900) parts.push(`${cond.duration} turn${cond.duration > 1 ? "s" : ""} left`);
+  if (typeof cond.instance === "number" && cond.instance > 0) parts.push(`${cond.instance} hit${cond.instance > 1 ? "s" : ""} left`);
+  if (/^dot:/.test(eff)) { const [, stat, amt] = eff.split(":"); parts.push(`${amt} ${String(stat).toUpperCase()}/turn`); }
+  else if (/^-?\d+%$/.test(eff)) parts.push(`${eff} damage`);
+  else if (/^\d+$/.test(eff)) parts.push(`−${eff} DMG`);
+  const meta = parts.length ? ` (${parts.join(", ")})` : "";
+  return `${name}${meta}${desc ? " — " + desc : ""}`;
+};
+window._DB_CONDITION_INFO = _DB_CONDITION_INFO;
+
+// ── Stale-condition detection & cleanup ──────────────────────────────────────
+// A safety-net for junk that automated ticks/reactions can leave behind:
+// malformed durations, orphaned actor references (e.g. hauntedBy:<gone-actor>),
+// exact duplicates, and a "Down" tag lingering on a revived (HP>0) actor.
+function _dbActorRefExists(id) {
+  if (!id) return false;
+  return !!(game.actors.get(id) || canvas?.tokens?.placeables?.some(t => t.actor?.id === id));
+}
+
+// Returns { list: [{index, cond, reason}], keep: [conds] } for one actor.
+function _dbDetectStaleConditions(actor) {
+  const conds = actor?.system?.conditions ?? [];
+  const stale = [];
+  const seen = new Set();
+  const hp = actor?.system?.hp?.current ?? 0;
+  conds.forEach((c, index) => {
+    const name = String(c?.name ?? "").toLowerCase();
+    const eff  = String(c?.effect ?? "");
+    // Malformed numeric fields
+    if ((typeof c?.duration === "number" && (c.duration < 0 || Number.isNaN(c.duration))) ||
+        (typeof c?.instance === "number" && (c.instance < 0 || Number.isNaN(c.instance)))) {
+      stale.push({ index, cond: c, reason: "malformed duration/instance" }); return;
+    }
+    // Orphaned actor reference in effect (hauntedBy:<id>, or any :<16-char id>)
+    const refMatch = eff.match(/(?:hauntedBy|caster|target|source)?:([A-Za-z0-9]{16})$/);
+    if (refMatch && !_dbActorRefExists(refMatch[1])) {
+      stale.push({ index, cond: c, reason: "references a unit no longer present" }); return;
+    }
+    // Lingering Down on a revived actor
+    if (name === "down" && hp > 0) {
+      stale.push({ index, cond: c, reason: "Down but HP > 0 (revived)" }); return;
+    }
+    // Exact duplicate (identical name+effect+duration+instance)
+    const sig = `${name}|${eff}|${c?.duration}|${c?.instance}`;
+    if (seen.has(sig)) { stale.push({ index, cond: c, reason: "duplicate" }); return; }
+    seen.add(sig);
+  });
+  return stale;
+}
+
+// Gather unique combatant actors (in-combat combatants, else all canvas tokens).
+function _dbCleanupTargets() {
+  const seen = new Set();
+  const out = [];
+  const state = window.CTB?.getState?.() ?? {};
+  const inCombat = state.phase === "active" || state.phase === "ticking";
+  const source = inCombat
+    ? (state.combatants ?? []).map(c =>
+        canvas.tokens.placeables.find(t => t.document?.id === c.tokenId || t.id === c.tokenId))
+    : (canvas?.tokens?.placeables ?? []);
+  for (const t of source) {
+    const a = t?.actor;
+    if (!a) continue;
+    const key = a.isToken ? a.token?.id : a.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ actor: a, token: t });
+  }
+  return out;
+}
+
+// Apply removals to one actor. removeIdx is a Set of indices into its conditions.
+async function _dbRemoveConditions(actor, token, removeIdx) {
+  const conds = actor?.system?.conditions ?? [];
+  const kept = conds.filter((_, i) => !removeIdx.has(i));
+  await actor.update({ "system.conditions": kept });
+  // Best-effort: clear matching token status icons for removed conditions
+  const removedLabels = conds.filter((_, i) => removeIdx.has(i))
+    .map(c => String(c?.label ?? "").toLowerCase())
+    .filter(l => CONFIG.statusEffects?.some(e => e.id === l));
+  for (const statusId of new Set(removedLabels)) {
+    try { await token?.document?.toggleActiveEffect?.({ id: statusId }, { active: false }); } catch (e) {}
+  }
+}
+
+// Silent cleanup (used at combat end). Returns number of conditions removed.
+async function _dbCleanupStaleSilent() {
+  if (!game.user.isGM) return 0;
+  let removed = 0;
+  for (const { actor, token } of _dbCleanupTargets()) {
+    const stale = _dbDetectStaleConditions(actor);
+    if (!stale.length) continue;
+    await _dbRemoveConditions(actor, token, new Set(stale.map(s => s.index)));
+    removed += stale.length;
+  }
+  return removed;
+}
+
+// GM tool — scans combatants, shows a confirmation of what will be stripped.
+window._dbConditionCleanup = async function() {
+  if (!game.user.isGM) { ui.notifications.warn("GM only."); return; }
+  const targets = _dbCleanupTargets();
+  const findings = [];
+  for (const { actor, token } of targets) {
+    const stale = _dbDetectStaleConditions(actor);
+    if (stale.length) findings.push({ actor, token, stale });
+  }
+  if (!findings.length) { ui.notifications.info("🧹 No stale conditions found."); return; }
+
+  const esc = (s) => String(s ?? "").replace(/</g, "&lt;");
+  const rows = findings.map(f => `
+    <div style="margin-bottom:8px;">
+      <div style="font-weight:700;color:#e8c86a;">${esc(f.actor.name)}</div>
+      ${f.stale.map(s => `<div style="font-size:12px;color:#d4d8e0;padding-left:10px;">• <b>${esc(s.cond.name ?? s.cond.label)}</b> <span style="color:#7a8090;">— ${esc(s.reason)}</span></div>`).join("")}
+    </div>`).join("");
+
+  const Dlg = foundry.appv1?.applications?.Dialog ?? Dialog;
+  const ok = await Dlg.confirm({
+    title: "🧹 Condition Cleanup",
+    content: `<div style="font-family:sans-serif;color:#d4d8e0;max-height:340px;overflow:auto;">
+        <p style="margin:0 0 8px;color:#7a8090;">The following stale conditions will be removed:</p>${rows}</div>`,
+    yes: () => true, no: () => false, defaultYes: false,
+  });
+  if (!ok) return;
+
+  let total = 0;
+  for (const f of findings) {
+    await _dbRemoveConditions(f.actor, f.token, new Set(f.stale.map(s => s.index)));
+    total += f.stale.length;
+  }
+  await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #7fbf7f;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;"><div style="font-size:13px;font-weight:700;color:#7fbf7f;">🧹 Condition Cleanup</div><div style="font-size:12px;margin-top:4px;">Removed <b>${total}</b> stale condition${total !== 1 ? "s" : ""} across <b>${findings.length}</b> unit${findings.length !== 1 ? "s" : ""}.</div></div>` });
+  ui.notifications.info(`🧹 Removed ${total} stale condition${total !== 1 ? "s" : ""}.`);
+};
+
 const _COMBAT_FLAGS = [
   "aimBonus", "ambushUsed", "battlecrazeHits", "bleedStacks", "blessingOfLight",
   "burrowed", "coverFireActive", "detainData", "detainState", "enchantBonus",
@@ -5896,8 +6169,9 @@ window._dbInspector = function(token) {
     : `<tr><td colspan="2" style="padding:4px 6px;color:#7a8090;font-style:italic;">No flags set.</td></tr>`;
 
   const conds = s.conditions ?? [];
+  const condTip = (c) => String(window._dbConditionTip ? window._dbConditionTip(c) : (c.name || c.label)).replace(/"/g, "&quot;");
   const condsHtml = conds.length
-    ? conds.map(c => `<span style="display:inline-block;background:#222428;border:1px solid #3a3f4a;border-radius:3px;padding:1px 7px;margin:2px;font-size:11px;color:#e8c86a;">${esc(c.name || c.label)}${c.duration ? ` <span style="color:#7a8090;">(${c.duration}t)</span>` : ""}${c.instance ? ` <span style="color:#7a8090;">[${c.instance}h]</span>` : ""}${c.effect ? ` <span style="color:#64b5f6;">${esc(c.effect)}</span>` : ""}</span>`).join("")
+    ? conds.map(c => `<span title="${condTip(c)}" style="display:inline-block;background:#222428;border:1px solid #3a3f4a;border-radius:3px;padding:1px 7px;margin:2px;font-size:11px;color:#e8c86a;cursor:help;">${esc(c.name || c.label)}${c.duration ? ` <span style="color:#7a8090;">(${c.duration}t)</span>` : ""}${c.instance ? ` <span style="color:#7a8090;">[${c.instance}h]</span>` : ""}${c.effect ? ` <span style="color:#64b5f6;">${esc(c.effect)}</span>` : ""}</span>`).join("")
     : `<span style="color:#7a8090;font-style:italic;">None.</span>`;
 
   const hp = s.hp ?? {}, ar = s.ar ?? {}, ki = s.ki ?? {};
@@ -6595,6 +6869,10 @@ const CTBEngine = {
     // ── Clear combat-scoped flags on every token so nothing carries into the
     //    next fight (boss breakpoints re-arm, Ambush refreshes, stacks reset) ──
     await _clearCombatFlags();
+
+    // Strip stale conditions left behind by ticks/reactions (orphaned haunts,
+    // lingering Down on revived units, duplicates) — silent, no dialog.
+    try { await _dbCleanupStaleSilent(); } catch (e) { console.warn("DBT | stale cleanup failed", e); }
 
     await _clearMovementRange();
     await CTB.setState({ phase: "idle", combatants: [] });
