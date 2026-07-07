@@ -2,7 +2,7 @@
   "id": "dawnbreaker-trials",
   "title": "Dawnbreaker Trials",
   "description": "Custom character sheet system for Dawnbreaker Trials.",
-  "version": "2.0.43",
+  "version": "2.0.44",
   "compatibility": {
     "minimum": "13",
     "verified": "14"

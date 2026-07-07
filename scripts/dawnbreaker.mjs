@@ -3729,6 +3729,51 @@ window._isAttackingFromBehind = function(defenderToken, attackerToken) {
   return false;
 };
 
+// ── Facing indicator ─────────────────────────────────────────────────────────
+// Draws a gold arrow on the (single) selected token showing its About-Face
+// facing, so the back-attack / Ambush mechanic is visible instead of mental
+// math. Client-side only; follows whoever has a token selected.
+let _dbFacingArrow = null;
+const _DB_FACE_VEC = { E: { x: 1, y: 0 }, S: { x: 0, y: 1 }, W: { x: -1, y: 0 }, N: { x: 0, y: -1 } };
+function _dbClearFacingArrow() {
+  if (_dbFacingArrow) { try { _dbFacingArrow.destroy(); } catch (e) {} _dbFacingArrow = null; }
+}
+function _dbDrawFacingArrow(token) {
+  _dbClearFacingArrow();
+  if (!token?.document || !canvas?.interface || typeof PIXI === "undefined") return;
+  const v = _DB_FACE_VEC[window._getFacing(token)];
+  if (!v) return;
+  const w = token.w ?? 0, h = token.h ?? 0;
+  const cx = token.document.x + w / 2, cy = token.document.y + h / 2;
+  const half = Math.max(w, h) / 2;
+  const edgeX = cx + v.x * half,        edgeY = cy + v.y * half;
+  const tipX  = cx + v.x * (half + 24), tipY  = cy + v.y * (half + 24);
+  const px = -v.y, py = v.x, hw = 13; // perpendicular + arrowhead half-width
+  const g = new PIXI.Graphics();
+  g.lineStyle(4, 0xffd24a, 0.9);
+  g.moveTo(edgeX, edgeY); g.lineTo(tipX, tipY);
+  g.beginFill(0xffd24a, 0.95);
+  g.drawPolygon([
+    tipX + v.x * 9,          tipY + v.y * 9,
+    tipX - v.x * 6 + px * hw, tipY - v.y * 6 + py * hw,
+    tipX - v.x * 6 - px * hw, tipY - v.y * 6 - py * hw,
+  ]);
+  g.endFill();
+  canvas.interface.addChild(g);
+  _dbFacingArrow = g;
+}
+function _dbRefreshFacingArrow() {
+  const c = canvas?.tokens?.controlled ?? [];
+  if (c.length === 1) _dbDrawFacingArrow(c[0]);
+  else _dbClearFacingArrow();
+}
+Hooks.on("controlToken", () => _dbRefreshFacingArrow());
+Hooks.on("updateToken", (tokenDoc) => {
+  const token = canvas.tokens?.get?.(tokenDoc.id);
+  if (token?.controlled) _dbRefreshFacingArrow();
+});
+Hooks.on("deleteToken", () => _dbClearFacingArrow());
+
 // ═══════════════════════════════════════════════════════════
 //  STATUS EFFECT HELPER
 // ═══════════════════════════════════════════════════════════
@@ -4864,7 +4909,53 @@ Hooks.on("updateActor", (actor, changes) => {
 
   // Re-evaluate the low-HP heartbeat whenever HP changes (GM-gated internally)
   if (newHP !== undefined) _dbUpdateHeartbeat();
+
+  // Re-tint the token to reflect its new health state
+  _dbApplyHealthTint(token);
 });
+
+// ── Token health tinting ─────────────────────────────────────────────────────
+// Mirrors the DBT HUD's exact health thresholds (bloodied <50%, critical <25%,
+// down at 0 HP) as a non-destructive mesh tint so the battlefield reads at a
+// glance. Runs on every client; players only see the tint on allies (or scanned
+// enemies), matching how the HUD gates enemy info.
+const _DB_HEALTH_TINT = { healthy: 0xffffff, bloodied: 0xffb083, critical: 0xff6a5a, down: 0x6a6a6a };
+function _dbHealthState(actor) {
+  const hp = actor?.system?.hp ?? {};
+  const cur = hp.current ?? 0, max = Math.max(1, hp.max ?? 1);
+  const pct = (cur / max) * 100;
+  if (cur <= 0) return "down";
+  if (pct < 25)  return "critical";
+  if (pct < 50)  return "bloodied";
+  return "healthy";
+}
+function _dbHealthTintVisible(token) {
+  if (game.user.isGM) return true;
+  if (token.document?.disposition === CONST.TOKEN_DISPOSITIONS.FRIENDLY) return true;
+  return (token.actor?.system?.conditions ?? []).some(c => c.name?.toLowerCase() === "scan");
+}
+// Multiply two hex colors channel-wise so a token's own configured tint is preserved.
+function _dbMulTint(a, b) {
+  const ar=(a>>16)&255, ag=(a>>8)&255, ab=a&255;
+  const br=(b>>16)&255, bg=(b>>8)&255, bb=b&255;
+  return (Math.round(ar*br/255)<<16) | (Math.round(ag*bg/255)<<8) | Math.round(ab*bb/255);
+}
+function _dbApplyHealthTint(token) {
+  if (!token?.mesh) return;
+  // Resolve the token's own base tint so we layer on top of it rather than clobber it.
+  let base = 0xffffff;
+  try {
+    const t = token.document?.texture?.tint;
+    if (t != null && t !== "") base = (typeof t === "number") ? t : Number(foundry.utils.Color.from(t));
+  } catch (e) {}
+  let enabled = true;
+  try { enabled = game.settings.get("dawnbreaker-trials", "tokenHealthTint") !== false; } catch (e) {}
+  if (!enabled || !token.actor || !_dbHealthTintVisible(token)) { token.mesh.tint = base; return; }
+  const state = _dbHealthState(token.actor);
+  token.mesh.tint = state === "healthy" ? base : _dbMulTint(base, _DB_HEALTH_TINT[state]);
+}
+// Reapply on every token draw/refresh (movement, vision updates, etc.)
+Hooks.on("refreshToken", (token) => _dbApplyHealthTint(token));
 
 window._dbApplyDamage = async (data) => {
   // Resolve token actor first — prefer explicit tokenId so unlinked duplicate
@@ -7184,6 +7275,27 @@ class TargetSelector extends foundry.appv1.api.Application {
     (document.getElementById("interface") ?? document.body).appendChild(el);
   }
   _clearAoEReadout() { document.getElementById("dbt-aoe-readout")?.remove(); }
+  // Flank callout — when the attacker's position is behind the hovered enemy's
+  // facing, flag it so the back-attack / Ambush opportunity is obvious.
+  _showBehindCallout(targetToken) {
+    this._clearBehindCallout();
+    const attackerToken = this._attackerToken ?? canvas.tokens.placeables.find(t => t.actor?.id === this._attacker?.id);
+    if (!attackerToken || targetToken.id === attackerToken.id) return;
+    if (targetToken.document.disposition === attackerToken.document.disposition) return; // foes only
+    if (!window._isAttackingFromBehind?.(targetToken, attackerToken)) return;
+    const el = document.createElement("div");
+    el.id = "dbt-behind-callout";
+    el.textContent = "⚠ ATTACKING FROM BEHIND";
+    Object.assign(el.style, {
+      position: "fixed", top: this._range > 0 ? "106px" : "64px", left: "50%",
+      transform: "translateX(-50%)", zIndex: "9999", background: "rgba(42,16,16,0.95)",
+      border: "1px solid #e05555", borderRadius: "6px", padding: "6px 14px",
+      fontFamily: "sans-serif", fontSize: "13px", fontWeight: "700", color: "#ff9a9a",
+      pointerEvents: "none", letterSpacing: "1px", boxShadow: "0 3px 12px rgba(0,0,0,0.5)",
+    });
+    (document.getElementById("interface") ?? document.body).appendChild(el);
+  }
+  _clearBehindCallout() { document.getElementById("dbt-behind-callout")?.remove(); }
   _showRangeHighlight() {
     if (!canvas.interface?.grid) return;
     canvas.interface.grid.clearHighlightLayer("crucible.range");
@@ -7332,7 +7444,7 @@ class TargetSelector extends foundry.appv1.api.Application {
         if (selDist < this._minReach) { ui.notifications.warn(`Target is too close!`); return; }
       }
       const affectedTokens = this._getAffectedTokens(token, canvas.tokens.placeables);
-      this._clearAoEPreview(); this._clearAoEReadout(); this._clearRangeHighlight();
+      this._clearAoEPreview(); this._clearAoEReadout(); this._clearBehindCallout(); this._clearRangeHighlight();
       // Face attacker toward selected target (skip on self-target — the
       // zero-length vector would snap facing to East)
       if (attackerToken && token.id !== attackerToken.id) {
@@ -7353,12 +7465,12 @@ class TargetSelector extends foundry.appv1.api.Application {
       await Application.prototype.close.call(this);
     });
     html.find(".db-target-row").hover(
-      (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); if (t) { t._onHoverIn?.(ev); if (this._range > 0) { this._showAoEPreview(t); this._showAoEReadout(t); } } },
-      (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); t?._onHoverOut?.(ev); this._clearAoEPreview(); this._clearAoEReadout(); }
+      (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); if (t) { t._onHoverIn?.(ev); if (this._range > 0) { this._showAoEPreview(t); this._showAoEReadout(t); } this._showBehindCallout(t); } },
+      (ev) => { const t = canvas.tokens.placeables.find(t => t.id === ev.currentTarget.dataset.tokenId); t?._onHoverOut?.(ev); this._clearAoEPreview(); this._clearAoEReadout(); this._clearBehindCallout(); }
     );
     setTimeout(() => { canvas.interface?.grid?.clearHighlightLayer("crucible.movement"); this._showRangeHighlight(); this._showTargetLines(); }, 150);
   }
-  async close(...args) { this._clearAoEPreview(); this._clearAoEReadout(); this._clearRangeHighlight(); this._clearTargetLines(); return super.close(...args); }
+  async close(...args) { this._clearAoEPreview(); this._clearAoEReadout(); this._clearBehindCallout(); this._clearRangeHighlight(); this._clearTargetLines(); return super.close(...args); }
   static select({ abilityName, abilityDesc, abilityIcon, targetType, attacker, attackerToken, tokenDoc, reach, minReach, range, shape, archingShot }) {
     return new Promise((resolve) => {
       // Resolve the specific canvas token placeable for the attacker.
@@ -8582,6 +8694,14 @@ Hooks.once("ready", () => {
   game.settings.register("dawnbreaker-trials", "undoStack", { scope: "world", config: false, type: Array, default: [] });
   game.settings.register("dawnbreaker-trials", "craftingLog", { scope: "world", config: false, type: String, default: "[]" });
   game.settings.register("dawnbreaker-trials", "growthPaths", { scope: "world", config: false, type: Array, default: [] });
+
+  // ── Token health tinting ──
+  game.settings.register("dawnbreaker-trials", "tokenHealthTint", {
+    name: "Token Health Tinting",
+    hint: "Tint tokens by HP state (bloodied below 50%, red below 25%, grey when Down), matching the Party HUD thresholds. Players only see it on allies and scanned enemies.",
+    scope: "world", config: true, type: Boolean, default: true,
+    onChange: () => { for (const t of canvas?.tokens?.placeables ?? []) _dbApplyHealthTint(t); },
+  });
 
   // ── Audio atmosphere automation ──
   game.settings.register("dawnbreaker-trials", "audioAtmosphere", {
