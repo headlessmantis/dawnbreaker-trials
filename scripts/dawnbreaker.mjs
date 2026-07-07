@@ -4910,16 +4910,19 @@ Hooks.on("updateActor", (actor, changes) => {
   // Re-evaluate the low-HP heartbeat whenever HP changes (GM-gated internally)
   if (newHP !== undefined) _dbUpdateHeartbeat();
 
-  // Re-tint the token to reflect its new health state
-  _dbApplyHealthTint(token);
+  // Update the token's health display (tint or portrait swap) for its new state
+  _dbApplyTokenHealthDisplay(token);
 });
 
-// ── Token health tinting ─────────────────────────────────────────────────────
+// ── Token health display ─────────────────────────────────────────────────────
 // Mirrors the DBT HUD's exact health thresholds (bloodied <50%, critical <25%,
-// down at 0 HP) as a non-destructive mesh tint so the battlefield reads at a
-// glance. Runs on every client; players only see the tint on allies (or scanned
-// enemies), matching how the HUD gates enemy info.
+// down at 0 HP). Two modes: a non-destructive color tint, or a "portrait swap"
+// that changes the token art to the actor's configured damage-portrait variant
+// (the same images the HUD shows). Dispatched by the tokenHealthDisplay setting.
 const _DB_HEALTH_TINT = { healthy: 0xffffff, bloodied: 0xffb083, critical: 0xff6a5a, down: 0x6a6a6a };
+function _dbHealthMode() {
+  try { return game.settings.get("dawnbreaker-trials", "tokenHealthDisplay") ?? "portrait"; } catch (e) { return "portrait"; }
+}
 function _dbHealthState(actor) {
   const hp = actor?.system?.hp ?? {};
   const cur = hp.current ?? 0, max = Math.max(1, hp.max ?? 1);
@@ -4929,7 +4932,7 @@ function _dbHealthState(actor) {
   if (pct < 50)  return "bloodied";
   return "healthy";
 }
-function _dbHealthTintVisible(token) {
+function _dbHealthVisible(token) {
   if (game.user.isGM) return true;
   if (token.document?.disposition === CONST.TOKEN_DISPOSITIONS.FRIENDLY) return true;
   return (token.actor?.system?.conditions ?? []).some(c => c.name?.toLowerCase() === "scan");
@@ -4940,22 +4943,74 @@ function _dbMulTint(a, b) {
   const br=(b>>16)&255, bg=(b>>8)&255, bb=b&255;
   return (Math.round(ar*br/255)<<16) | (Math.round(ag*bg/255)<<8) | Math.round(ab*bb/255);
 }
-function _dbApplyHealthTint(token) {
-  if (!token?.mesh) return;
-  // Resolve the token's own base tint so we layer on top of it rather than clobber it.
+function _dbTokenBaseTint(token) {
   let base = 0xffffff;
   try {
     const t = token.document?.texture?.tint;
     if (t != null && t !== "") base = (typeof t === "number") ? t : Number(foundry.utils.Color.from(t));
   } catch (e) {}
-  let enabled = true;
-  try { enabled = game.settings.get("dawnbreaker-trials", "tokenHealthTint") !== false; } catch (e) {}
-  if (!enabled || !token.actor || !_dbHealthTintVisible(token)) { token.mesh.tint = base; return; }
+  return base;
+}
+// Color-tint mode. Resets to base tint unless mode==="tint".
+function _dbApplyHealthTint(token) {
+  if (!token?.mesh) return;
+  const base = _dbTokenBaseTint(token);
+  if (_dbHealthMode() !== "tint" || !token.actor || !_dbHealthVisible(token)) { token.mesh.tint = base; return; }
   const state = _dbHealthState(token.actor);
   token.mesh.tint = state === "healthy" ? base : _dbMulTint(base, _DB_HEALTH_TINT[state]);
 }
+
+// Resolve the damage-portrait variant for a token's actor, mirroring the HUD's
+// _resolvePortrait priority (condition triggers → down → critical → bloodied).
+// Returns an image path for a damaged state, or null when healthy / unconfigured
+// (meaning: restore the token's original art).
+function _dbTokenVariantImage(actor) {
+  let vars;
+  try { vars = (game.settings.get("dawnbreaker-trials", "portraitVariants") ?? {})[actor?.id]; } catch (e) {}
+  if (!vars) return null;
+  const hp = actor.system?.hp ?? {};
+  const cur = hp.current ?? 0, max = Math.max(1, hp.max ?? 1);
+  const pct = (cur / max) * 100;
+  const isDown = cur <= 0;
+  const condNames = (actor.system?.conditions ?? []).map(c => (c.name ?? "").toLowerCase());
+  for (const v of (vars.conditions ?? [])) {
+    if (v.img && condNames.includes((v.trigger ?? "").toLowerCase())) return v.img;
+  }
+  if (isDown     && vars.down)     return vars.down;
+  if (pct < 25   && vars.critical) return vars.critical;
+  if (pct < 50   && vars.bloodied) return vars.bloodied;
+  return null;
+}
+// Portrait-swap mode. GM-driven & persistent (token doc update syncs to all).
+// The token's original art is stashed in a flag on first swap and restored when
+// the actor returns to a healthy state (or the mode is turned off).
+async function _dbApplyTokenPortrait(token) {
+  if (!game.user.isGM || !token?.document || !token.actor) return;
+  const cur      = token.document.texture?.src ?? "";
+  const baseFlag = token.document.getFlag?.("dawnbreaker-trials", "baseTokenImg");
+  const wantImg  = _dbHealthMode() === "portrait" ? _dbTokenVariantImage(token.actor) : null;
+
+  if (wantImg) {
+    if (cur === wantImg) return;
+    const updates = { "texture.src": wantImg };
+    if (baseFlag == null || baseFlag === "") updates["flags.dawnbreaker-trials.baseTokenImg"] = cur;
+    try { await token.document.update(updates); } catch (e) { console.warn("DBT | token portrait swap failed", e); }
+  } else if (baseFlag != null && baseFlag !== "") {
+    // Restore original art and clear the stash
+    try {
+      if (cur !== baseFlag) await token.document.update({ "texture.src": baseFlag, "flags.dawnbreaker-trials.-=baseTokenImg": null });
+      else await token.document.update({ "flags.dawnbreaker-trials.-=baseTokenImg": null });
+    } catch (e) { console.warn("DBT | token portrait restore failed", e); }
+  }
+}
+// Dispatcher — both helpers check the mode internally so switching modes cleans
+// up the other (tint resets to base; portrait restores original art).
+function _dbApplyTokenHealthDisplay(token) {
+  _dbApplyHealthTint(token);
+  _dbApplyTokenPortrait(token);
+}
 // Reapply on every token draw/refresh (movement, vision updates, etc.)
-Hooks.on("refreshToken", (token) => _dbApplyHealthTint(token));
+Hooks.on("refreshToken", (token) => _dbApplyTokenHealthDisplay(token));
 
 window._dbApplyDamage = async (data) => {
   // Resolve token actor first — prefer explicit tokenId so unlinked duplicate
@@ -8695,12 +8750,13 @@ Hooks.once("ready", () => {
   game.settings.register("dawnbreaker-trials", "craftingLog", { scope: "world", config: false, type: String, default: "[]" });
   game.settings.register("dawnbreaker-trials", "growthPaths", { scope: "world", config: false, type: Array, default: [] });
 
-  // ── Token health tinting ──
-  game.settings.register("dawnbreaker-trials", "tokenHealthTint", {
-    name: "Token Health Tinting",
-    hint: "Tint tokens by HP state (bloodied below 50%, red below 25%, grey when Down), matching the Party HUD thresholds. Players only see it on allies and scanned enemies.",
-    scope: "world", config: true, type: Boolean, default: true,
-    onChange: () => { for (const t of canvas?.tokens?.placeables ?? []) _dbApplyHealthTint(t); },
+  // ── Token health display ──
+  game.settings.register("dawnbreaker-trials", "tokenHealthDisplay", {
+    name: "Token Health Display",
+    hint: "How tokens react to HP state (bloodied <50%, critical <25%, Down at 0), matching the Party HUD. 'Portrait swap' changes the token art to the actor's configured bloodied/critical/down portrait variant (same images the HUD uses).",
+    scope: "world", config: true, type: String, default: "portrait",
+    choices: { off: "Off", tint: "Color tint", portrait: "Portrait swap (damage art)" },
+    onChange: () => { for (const t of canvas?.tokens?.placeables ?? []) _dbApplyTokenHealthDisplay(t); },
   });
 
   // ── Audio atmosphere automation ──
