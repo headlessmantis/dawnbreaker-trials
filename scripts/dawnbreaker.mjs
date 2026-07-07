@@ -4764,28 +4764,47 @@ Hooks.on("updateActor", (actor, changes) => {
 // the deltas.
 const _dbVitalsPrev = new Map(); // document.uuid → { hp, ar, conds:[names] }
 
-function _dbFloatText(token, text, color, { dx = 0, up = true, size = 28 } = {}) {
+// Per-token scheduler so simultaneous floaters (e.g. HP + AR from one hit)
+// don't stack on the same spot and become unreadable. Each new floater for a
+// token is time-staggered after the previous one so they rise one at a time.
+const _dbFloatSched = new Map(); // tokenId → next-available spawn timestamp (ms)
+const DB_FLOAT_GAP  = 600;       // ms between stacked floaters on one token
+const DB_FLOAT_MAXQ = 2600;      // cap queued delay so spam can't trail forever
+
+function _dbFloatSpawn(token, text, color, size, up) {
   const inter = canvas?.interface;
   if (!token || !inter?.createScrollingText) return;
   const c = token.center ?? { x: (token.x ?? 0) + (token.w ?? 0) / 2, y: (token.y ?? 0) + (token.h ?? 0) / 2 };
   const A = CONST.TEXT_ANCHOR_POINTS;
   try {
     inter.createScrollingText(
-      { x: c.x + dx, y: c.y },
+      { x: c.x, y: c.y },
       text,
       {
         anchor: up ? A.TOP : A.BOTTOM,
         direction: up ? A.TOP : A.BOTTOM,
-        distance: (token.h ?? 100) * 0.8,
+        distance: (token.h ?? 100) * 0.9,
         fontSize: size,
         fill: color,
         stroke: 0x000000,
         strokeThickness: 4,
-        jitter: 0.25,
+        jitter: 0.15,
         duration: 2000,
       }
     );
   } catch (e) { /* interface not ready — ignore */ }
+}
+
+function _dbFloatText(token, text, color, { up = true, size = 28 } = {}) {
+  if (!token) return;
+  const id  = token.id ?? token.document?.id ?? String(Math.random());
+  const now = Date.now();
+  const start = Math.max(now, _dbFloatSched.get(id) ?? 0);
+  const delay = start - now;
+  if (delay > DB_FLOAT_MAXQ) return; // too many queued — drop to avoid a long trail
+  _dbFloatSched.set(id, start + DB_FLOAT_GAP);
+  if (delay <= 0) _dbFloatSpawn(token, text, color, size, up);
+  else setTimeout(() => _dbFloatSpawn(token, text, color, size, up), delay);
 }
 
 Hooks.on("preUpdateActor", (actor, changes) => {
@@ -4814,16 +4833,16 @@ Hooks.on("updateActor", (actor, changes) => {
   const newHP = actor.system?.hp?.current;
   if (prev.hp !== null && newHP !== undefined && newHP !== prev.hp) {
     const d = newHP - prev.hp;
-    if (d < 0) _dbFloatText(token, `−${-d}`, 0xe05555, { dx: -14, size: dmgSize(d) });
-    else       _dbFloatText(token, `+${d}`,      0x81c784, { dx: -14, size: dmgSize(d) });
+    if (d < 0) _dbFloatText(token, `−${-d} HP`, 0xe05555, { size: dmgSize(d) });
+    else       _dbFloatText(token, `+${d} HP`,      0x81c784, { size: dmgSize(d) });
   }
 
   // AR change
   const newAR = actor.system?.ar?.current;
   if (prev.ar !== null && newAR !== undefined && newAR !== prev.ar) {
     const d = newAR - prev.ar;
-    if (d < 0) _dbFloatText(token, `−${-d} AR`, 0x66b2ff, { dx: 20, size: dmgSize(d) - 4 });
-    else       _dbFloatText(token, `+${d} AR`,      0x4fd6d6, { dx: 20, size: dmgSize(d) - 4 });
+    if (d < 0) _dbFloatText(token, `−${-d} AR`, 0x66b2ff, { size: dmgSize(d) - 4 });
+    else       _dbFloatText(token, `+${d} AR`,      0x4fd6d6, { size: dmgSize(d) - 4 });
   }
 
   // Newly-added conditions
@@ -4838,8 +4857,8 @@ Hooks.on("updateActor", (actor, changes) => {
       added.push(c?.name ?? n);
     }
     // Float up to 2 new conditions so the token isn't spammed
-    added.slice(0, 2).forEach((name, i) => {
-      _dbFloatText(token, String(name).toUpperCase(), 0xc79bff, { dx: 0, up: false, size: 20 });
+    added.slice(0, 2).forEach((name) => {
+      _dbFloatText(token, String(name).toUpperCase(), 0xc79bff, { up: false, size: 20 });
     });
   }
 });
