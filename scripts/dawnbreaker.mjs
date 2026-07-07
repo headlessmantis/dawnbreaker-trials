@@ -3774,6 +3774,71 @@ Hooks.on("updateToken", (tokenDoc) => {
 });
 Hooks.on("deleteToken", () => _dbClearFacingArrow());
 
+// ── Map ping / attention marker ──────────────────────────────────────────────
+// A themed, color-by-user ping dropped at the cursor and broadcast to every
+// client — fast tactical "look here" without typing. Triggered by a rebindable
+// keybinding (Configure Controls). Drawn in world space so it sticks to the map.
+function _dbUserColorHex() {
+  try {
+    const c = game.user?.color;
+    if (c == null) return 0xffcc00;
+    return (typeof c === "number") ? c : Number(foundry.utils.Color.from(c));
+  } catch (e) { return 0xffcc00; }
+}
+function _dbShowPing(x, y, color, name) {
+  if (!canvas?.interface || !canvas.app?.ticker || typeof PIXI === "undefined") return;
+  const gridSize = canvas.grid?.size ?? 100;
+  const container = new PIXI.Container();
+  container.position.set(x, y);
+  container.eventMode = "none";
+  canvas.interface.addChild(container);
+  const g = new PIXI.Graphics();
+  container.addChild(g);
+  let label = null;
+  if (name) {
+    label = new PIXI.Text(String(name), { fontFamily: "Signika, sans-serif", fontSize: 22, fill: color, stroke: 0x000000, strokeThickness: 4 });
+    label.anchor.set(0.5, 1);
+    label.position.set(0, -gridSize * 0.9);
+    container.addChild(label);
+  }
+  const DURATION = 2400, maxR = gridSize * 1.3, start = performance.now();
+  const ticker = canvas.app.ticker;
+  let done = false;
+  const finish = () => {
+    if (done) return; done = true;
+    try { ticker.remove(tick); } catch (e) {}
+    try { container.destroy({ children: true }); } catch (e) {}
+  };
+  const tick = () => {
+    const t = (performance.now() - start) / DURATION;
+    if (t >= 1) return finish();
+    g.clear();
+    for (let i = 0; i < 3; i++) {
+      const pt = (t * 2.2) - i * 0.28;
+      if (pt <= 0 || pt >= 1) continue;
+      g.lineStyle(4, color, (1 - pt) * 0.85);
+      g.drawCircle(0, 0, maxR * pt);
+    }
+    g.beginFill(color, Math.max(0, 1 - t * 1.4));
+    g.drawCircle(0, 0, 7);
+    g.endFill();
+    if (label) label.alpha = Math.max(0, 1 - t * 1.1);
+  };
+  ticker.add(tick);
+  setTimeout(finish, DURATION + 400);
+}
+function _dbEmitPing() {
+  if (!canvas?.ready) return false;
+  const pos = canvas.mousePosition;
+  if (!pos || (canvas.dimensions?.rect && !canvas.dimensions.rect.contains(pos.x, pos.y))) return false;
+  const x = Math.round(pos.x), y = Math.round(pos.y);
+  const color = _dbUserColorHex(), name = game.user?.name ?? "";
+  game.socket.emit("system.dawnbreaker-trials", { type: "mapPing", x, y, color, name });
+  _dbShowPing(x, y, color, name);
+  return true;
+}
+window._dbEmitPing = _dbEmitPing;
+
 // ═══════════════════════════════════════════════════════════
 //  STATUS EFFECT HELPER
 // ═══════════════════════════════════════════════════════════
@@ -8786,6 +8851,15 @@ Hooks.once("ready", () => {
     scope: "world", config: true, type: String, default: "sounds/combat/epic-next-horn.ogg", filePicker: "audio",
   });
 
+  // ── Map ping keybinding ──
+  game.keybindings.register("dawnbreaker-trials", "mapPing", {
+    name: "Ping Location",
+    hint: "Drop a themed attention ping at the cursor for all players to see.",
+    editable: [{ key: "KeyG" }],
+    onDown: () => _dbEmitPing(),
+    precedence: CONST.KEYBINDING_PRECEDENCE?.NORMAL ?? 1,
+  });
+
   _ensureEnhancementTablesJournal();
 
   game.socket.on("system.dawnbreaker-trials", async (data) => {
@@ -8827,6 +8901,12 @@ Hooks.once("ready", () => {
     }
     if (data.type === "bossBanner") {
       _dbShowBossBanner(data.title, data.sub, data.color);
+      return;
+    }
+
+    // ── Map ping — draw on ALL clients ──
+    if (data.type === "mapPing") {
+      _dbShowPing(data.x, data.y, data.color, data.name);
       return;
     }
 
