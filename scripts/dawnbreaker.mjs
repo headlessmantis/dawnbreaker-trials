@@ -3839,6 +3839,59 @@ function _dbEmitPing() {
 }
 window._dbEmitPing = _dbEmitPing;
 
+// ── Cinematic KO effect ──────────────────────────────────────────────────────
+// Plays when a unit drops: a bright impact flash over the token, a scaling
+// "☠ NAME DOWN" burst, and an optional thud (audioKOSrc). Drawn as overlay
+// graphics so it doesn't fight the health tint/portrait system. GM broadcasts
+// so every client sees the defeat.
+function _dbKOEffect(token, name) {
+  const inter = canvas?.interface;
+  if (!token?.document || !inter || !canvas.app?.ticker || typeof PIXI === "undefined") return;
+  const gs = canvas.grid?.size ?? 100;
+  const w = token.w ?? gs, h = token.h ?? gs;
+  const cx = token.document.x + w / 2, cy = token.document.y + h / 2;
+
+  const flash = new PIXI.Graphics();
+  flash.beginFill(0xffffff, 1).drawRoundedRect(-w / 2, -h / 2, w, h, 10).endFill();
+  flash.position.set(cx, cy);
+  try { flash.blendMode = PIXI.BLEND_MODES.ADD; } catch (e) {}
+  inter.addChild(flash);
+
+  const txt = new PIXI.Text(`☠ ${String(name ?? "").toUpperCase()} DOWN`, {
+    fontFamily: "Signika, sans-serif", fontSize: 26, fill: 0xff5555,
+    stroke: 0x000000, strokeThickness: 5, fontWeight: "900", align: "center",
+  });
+  txt.anchor.set(0.5, 0.5);
+  txt.position.set(cx, cy - h * 0.2);
+  inter.addChild(txt);
+
+  const DUR = 1300, start = performance.now(), ticker = canvas.app.ticker;
+  let done = false;
+  const finish = () => {
+    if (done) return; done = true;
+    try { ticker.remove(tick); } catch (e) {}
+    try { flash.destroy(); } catch (e) {}
+    try { txt.destroy(); } catch (e) {}
+  };
+  const tick = () => {
+    const t = (performance.now() - start) / DUR;
+    if (t >= 1) return finish();
+    flash.alpha = Math.max(0, 0.85 * (1 - t / 0.3));           // quick white pop
+    txt.scale.set(0.7 + Math.min(1, t * 1.6) * 0.6);            // scale up
+    txt.alpha = t < 0.15 ? (t / 0.15) : Math.max(0, 1 - (t - 0.15) / 0.85);
+    txt.position.y = cy - h * 0.2 - t * gs * 0.5;               // drift up
+  };
+  ticker.add(tick);
+  setTimeout(finish, DUR + 300);
+
+  // Thud sound (each client plays its own copy)
+  try {
+    const atmos = game.settings.get("dawnbreaker-trials", "audioAtmosphere") !== false;
+    const src   = game.settings.get("dawnbreaker-trials", "audioKOSrc") ?? "";
+    if (atmos && src) (foundry.audio?.AudioHelper ?? AudioHelper).play({ src, volume: 0.7, autoplay: true, loop: false }, false);
+  } catch (e) {}
+}
+
 // ═══════════════════════════════════════════════════════════
 //  STATUS EFFECT HELPER
 // ═══════════════════════════════════════════════════════════
@@ -4186,6 +4239,13 @@ async function _applyDownCondition(actor, { suppressChat = false } = {}) {
   conditions.push({ name: "Down", label: "down", duration: 4, effect: "Unit is incapacitated. Removed from combat after 4 turns." });
   await actor.update({ "system.conditions": conditions });
   await _applyStatusEffect(actor, "down", true);
+
+  // Cinematic KO — flash + burst + thud on every client
+  const koToken = _actorToken(actor);
+  if (koToken) {
+    game.socket.emit("system.dawnbreaker-trials", { type: "koEffect", tokenId: koToken.document?.id ?? koToken.id, name: actor.name });
+    _dbKOEffect(koToken, actor.name);
+  }
   if (!suppressChat) {
     await ChatMessage.create({
       content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">☠ <b>${actor.name}</b> is <span style="color:#e05555;font-weight:700;">Down!</span> — 4 turns remaining before removal from combat.</div>`
@@ -8850,6 +8910,11 @@ Hooks.once("ready", () => {
     hint: "One-shot played when combat ends. Blank to disable.",
     scope: "world", config: true, type: String, default: "sounds/combat/epic-next-horn.ogg", filePicker: "audio",
   });
+  game.settings.register("dawnbreaker-trials", "audioKOSrc", {
+    name: "KO / Down Sound",
+    hint: "Thud played on the cinematic KO effect when a unit drops. Blank for a visual-only KO.",
+    scope: "world", config: true, type: String, default: "", filePicker: "audio",
+  });
 
   // ── Map ping keybinding ──
   game.keybindings.register("dawnbreaker-trials", "mapPing", {
@@ -8907,6 +8972,13 @@ Hooks.once("ready", () => {
     // ── Map ping — draw on ALL clients ──
     if (data.type === "mapPing") {
       _dbShowPing(data.x, data.y, data.color, data.name);
+      return;
+    }
+
+    // ── Cinematic KO — play on ALL clients ──
+    if (data.type === "koEffect") {
+      const koTok = canvas.tokens?.placeables?.find(t => t.document?.id === data.tokenId || t.id === data.tokenId);
+      if (koTok) _dbKOEffect(koTok, data.name);
       return;
     }
 
