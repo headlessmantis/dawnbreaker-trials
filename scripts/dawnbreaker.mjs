@@ -5638,7 +5638,7 @@ const CastQueue = {
     await game.settings.set("dawnbreaker-trials", CastQueue.SETTING, queue);
     game.socket.emit("system.dawnbreaker-trials", { type: "castQueueUpdate", queue });
   },
-  async queue({ actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId = null, targetTokenId = null, onResolve = null, callbackId = null, archingShot = false }) {
+  async queue({ actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId = null, targetTokenId = null, onResolve = null, callbackId = null }) {
     // Self-derive the caster's token when not passed — the caster is the
     // controlled token in every casting macro. Required so duplicate unlinked
     // casters resolve/cancel/fizzle independently.
@@ -5650,7 +5650,7 @@ const CastQueue = {
       CastQueue._localCallbacks.set(callbackId, onResolve);
     }
     if (!game.user.isGM) {
-      game.socket.emit("system.dawnbreaker-trials", { type: "castQueueAdd", actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId, targetTokenId, callbackId, archingShot });
+      game.socket.emit("system.dawnbreaker-trials", { type: "castQueueAdd", actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId, targetTokenId, callbackId });
       return;
     }
     const queue = CastQueue.getQueue();
@@ -5693,7 +5693,6 @@ const CastQueue = {
       targetX: targetX ?? null, targetY: targetY ?? null,
       aoeRange: aoeRange ?? 0, aoeShape: aoeShape ?? "circle",
       animFile: animFile ?? "", animScale: animScale ?? 1.0, animSound: animSound ?? "",
-      archingShot: archingShot ?? false,
     };
 
     // ── Out of combat: cast-speed abilities resolve instantly ──────────────
@@ -5774,23 +5773,6 @@ const CastQueue = {
       if (!target || (target.system.hp?.current ?? 0) <= 0) {
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> fizzled — target no longer valid.</div>` });
         return;
-      }
-      // ── Line-of-sight re-check ──────────────────────────────────────────────
-      // Ranged offensive casts obey the same LOS rules as instant attacks: a
-      // wall or body that moved into the line during the cast blocks it. Only
-      // for ranged (>1 tile) damaging casts; Arching Shot casts bypass it.
-      const isOffensiveCast = entry.attackType === "physical" || entry.attackType === "magical";
-      if (isOffensiveCast && !entry.archingShot && casterToken && targetToken && window._checkRangedLOS) {
-        const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
-        const ax = Math.round(casterToken.document.x / size), ay = Math.round(casterToken.document.y / size);
-        const wA = Math.max(1, Math.round(casterToken.document.width  ?? 1)), hA = Math.max(1, Math.round(casterToken.document.height ?? 1));
-        const bx = Math.round(targetToken.document.x / size), by = Math.round(targetToken.document.y / size);
-        const wB = Math.max(1, Math.round(targetToken.document.width  ?? 1)), hB = Math.max(1, Math.round(targetToken.document.height ?? 1));
-        const dist = Math.max(0, bx - (ax + wA - 1), ax - (bx + wB - 1)) + Math.max(0, by - (ay + hA - 1), ay - (by + hB - 1));
-        if (dist > 1 && window._checkRangedLOS(casterToken, targetToken, false).blocked) {
-          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> fizzled — <span style="color:#e07a30;font-weight:700;">line of sight blocked</span> to ${target.name}.</div>` });
-          return;
-        }
       }
       resolvedTargets = [{ actor: target, token: targetToken ?? canvas.tokens.placeables.find(t => t.actor?.id === target.id) ?? null }];
     }
@@ -7658,7 +7640,7 @@ class TargetSelector extends foundry.appv1.api.Application {
       const inRange = dist <= this._reach && dist >= this._minReach;
       if (!inRange && this._reach >= 99) continue; // unlimited reach — don't draw to everyone
       let losBlocked = false;
-      if (inRange && this._reach > 1 && !this._archingShot && window._checkRangedLOS) {
+      if (isEnemy && inRange && this._reach > 1 && !this._archingShot && window._checkRangedLOS) {
         losBlocked = !!window._checkRangedLOS(attackerToken, t, false).blocked;
       }
       let color, alpha;
@@ -7693,9 +7675,12 @@ class TargetSelector extends foundry.appv1.api.Application {
       const actor = t.actor, scanned = actor?.system?.conditions?.some(c => c.name.toLowerCase() === "scan");
       const showStats = !(actor?.type === "npc") || scanned || game.user.isGM;
       const dist = attackerToken ? this._tileDistance(attackerToken, t) : 0;
-      // LOS check for ranged attacks (reach > 1) — straight line blocked by tokens/walls unless archingShot
+      // LOS check for ranged attacks (reach > 1) — straight line blocked by tokens/walls unless archingShot.
+      // Only enemies require line of sight; support abilities on allies (heals,
+      // buffs, cures) reach them regardless of who's standing in the way.
+      const isEnemyTarget = t.document.disposition !== attackerDisp;
       let losBlocked = false;
-      if (attackerToken && this._reach > 1 && !this._archingShot && window._checkRangedLOS) {
+      if (isEnemyTarget && attackerToken && this._reach > 1 && !this._archingShot && window._checkRangedLOS) {
         const los = window._checkRangedLOS(attackerToken, t, false);
         losBlocked = los.blocked;
       }
