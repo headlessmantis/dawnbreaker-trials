@@ -5,6 +5,6 @@
     <div class="db-cutscene-bar db-cutscene-bar-bottom">
       {{#if caption}}<div class="db-cutscene-caption">{{caption}}</div>{{/if}}
     </div>
-    <button type="button" class="db-cutscene-dismiss" title="Close">✕</button>
+    {{#if isGM}}<button type="button" class="db-cutscene-dismiss" title="Close for everyone">✕</button>{{/if}}
   </div>
 </div>

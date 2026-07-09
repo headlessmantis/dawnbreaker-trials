@@ -5932,7 +5932,7 @@ class CutsceneViewer extends foundry.appv1.api.Application {
     this._data = data;
   }
   getData() {
-    return { img: this._data.img ?? "", caption: this._data.caption ?? "" };
+    return { img: this._data.img ?? "", caption: this._data.caption ?? "", isGM: game.user.isGM };
   }
   activateListeners(html) {
     super.activateListeners(html);
@@ -5948,8 +5948,16 @@ class CutsceneViewer extends foundry.appv1.api.Application {
     if (CutsceneViewer._current === this) CutsceneViewer._current = null;
     return super.close(options);
   }
+  // User-initiated close (✕, backdrop click, Escape). GM-only: the cutscene
+  // stays up on every player's screen until the GM ends it for the whole table.
   static dismiss() {
-    if (CutsceneViewer._current) CutsceneViewer._current.close();
+    if (!CutsceneViewer._current) return;
+    if (!game.user.isGM) {
+      ui.notifications.info("The GM controls when the cutscene ends.");
+      return;
+    }
+    game.socket.emit("system.dawnbreaker-trials", { type: "cutsceneHide" });
+    CutsceneViewer._current.close();
   }
   static show(data = {}) {
     if (CutsceneViewer._current) CutsceneViewer._current.close();
