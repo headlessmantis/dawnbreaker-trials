@@ -5638,7 +5638,7 @@ const CastQueue = {
     await game.settings.set("dawnbreaker-trials", CastQueue.SETTING, queue);
     game.socket.emit("system.dawnbreaker-trials", { type: "castQueueUpdate", queue });
   },
-  async queue({ actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId = null, targetTokenId = null, onResolve = null, callbackId = null }) {
+  async queue({ actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId = null, targetTokenId = null, onResolve = null, callbackId = null, archingShot = false }) {
     // Self-derive the caster's token when not passed — the caster is the
     // controlled token in every casting macro. Required so duplicate unlinked
     // casters resolve/cancel/fizzle independently.
@@ -5650,7 +5650,7 @@ const CastQueue = {
       CastQueue._localCallbacks.set(callbackId, onResolve);
     }
     if (!game.user.isGM) {
-      game.socket.emit("system.dawnbreaker-trials", { type: "castQueueAdd", actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId, targetTokenId, callbackId });
+      game.socket.emit("system.dawnbreaker-trials", { type: "castQueueAdd", actorId, targetId, abilityName, abilityIcon, castSpeed, attackType, formula, apCost, kiCost, targetX, targetY, aoeRange, aoeShape, animFile, animScale, animSound, casterTokenId, targetTokenId, callbackId, archingShot });
       return;
     }
     const queue = CastQueue.getQueue();
@@ -5693,6 +5693,7 @@ const CastQueue = {
       targetX: targetX ?? null, targetY: targetY ?? null,
       aoeRange: aoeRange ?? 0, aoeShape: aoeShape ?? "circle",
       animFile: animFile ?? "", animScale: animScale ?? 1.0, animSound: animSound ?? "",
+      archingShot: archingShot ?? false,
     };
 
     // ── Out of combat: cast-speed abilities resolve instantly ──────────────
@@ -5773,6 +5774,23 @@ const CastQueue = {
       if (!target || (target.system.hp?.current ?? 0) <= 0) {
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> fizzled — target no longer valid.</div>` });
         return;
+      }
+      // ── Line-of-sight re-check ──────────────────────────────────────────────
+      // Ranged offensive casts obey the same LOS rules as instant attacks: a
+      // wall or body that moved into the line during the cast blocks it. Only
+      // for ranged (>1 tile) damaging casts; Arching Shot casts bypass it.
+      const isOffensiveCast = entry.attackType === "physical" || entry.attackType === "magical";
+      if (isOffensiveCast && !entry.archingShot && casterToken && targetToken && window._checkRangedLOS) {
+        const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+        const ax = Math.round(casterToken.document.x / size), ay = Math.round(casterToken.document.y / size);
+        const wA = Math.max(1, Math.round(casterToken.document.width  ?? 1)), hA = Math.max(1, Math.round(casterToken.document.height ?? 1));
+        const bx = Math.round(targetToken.document.x / size), by = Math.round(targetToken.document.y / size);
+        const wB = Math.max(1, Math.round(targetToken.document.width  ?? 1)), hB = Math.max(1, Math.round(targetToken.document.height ?? 1));
+        const dist = Math.max(0, bx - (ax + wA - 1), ax - (bx + wB - 1)) + Math.max(0, by - (ay + hA - 1), ay - (by + hB - 1));
+        if (dist > 1 && window._checkRangedLOS(casterToken, targetToken, false).blocked) {
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> fizzled — <span style="color:#e07a30;font-weight:700;">line of sight blocked</span> to ${target.name}.</div>` });
+          return;
+        }
       }
       resolvedTargets = [{ actor: target, token: targetToken ?? canvas.tokens.placeables.find(t => t.actor?.id === target.id) ?? null }];
     }
