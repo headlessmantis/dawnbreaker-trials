@@ -8795,6 +8795,17 @@ window.DawnbreakerLogViewer     = DawnbreakerLogViewer;
 // ═══════════════════════════════════════════════════════════
 Hooks.once("init", () => {
   console.log("Dawnbreaker Trials | Initialising system");
+
+  // Map-ping keybinding — MUST be registered during init (Foundry throws
+  // "You cannot register a Keybinding after the init hook" otherwise).
+  game.keybindings.register("dawnbreaker-trials", "mapPing", {
+    name: "Ping Location",
+    hint: "Drop a themed attention ping at the cursor for all players to see.",
+    editable: [{ key: "KeyG" }],
+    onDown: () => _dbEmitPing(),
+    precedence: CONST.KEYBINDING_PRECEDENCE?.NORMAL ?? 1,
+  });
+
   CONFIG.sounds.dice = "";
   delete CONFIG.ui.combat;
   window.CTB                 = CTB;
@@ -9026,14 +9037,9 @@ Hooks.once("ready", () => {
     scope: "client", config: true, type: Boolean, default: true,
   });
 
-  // ── Map ping keybinding ──
-  game.keybindings.register("dawnbreaker-trials", "mapPing", {
-    name: "Ping Location",
-    hint: "Drop a themed attention ping at the cursor for all players to see.",
-    editable: [{ key: "KeyG" }],
-    onDown: () => _dbEmitPing(),
-    precedence: CONST.KEYBINDING_PRECEDENCE?.NORMAL ?? 1,
-  });
+  // NOTE: the map-ping keybinding is registered in the "init" hook — Foundry
+  // throws if game.keybindings.register runs after init, and a throw here would
+  // abort the rest of this hook (socket listener, cutscene clicks, etc.).
 
   _ensureEnhancementTablesJournal();
 
