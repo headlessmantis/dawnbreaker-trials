@@ -29,6 +29,14 @@
         <div class="ark-char-tags">
           {{#if system.bio.class}}<span class="ark-char-tag">{{system.bio.class}}</span>{{/if}}
           {{#if system.bio.rank}}<span class="ark-char-tag ark-tag-rank">{{system.bio.rank}}</span>{{/if}}
+          <select class="db-outfit-select" title="Outfit — switch portrait & token art"
+            style="background:#1a1c20;border:1px solid #3a3f4a;color:#c8a84b;border-radius:3px;font-size:10px;padding:1px 4px;max-width:140px;">
+            <option value="" {{#unless activeOutfit}}selected{{/unless}} disabled>— Outfit —</option>
+            {{#each outfits}}
+            <option value="{{this.id}}" {{#if (eq this.id ../activeOutfit)}}selected{{/if}}>{{this.name}}</option>
+            {{/each}}
+            <option value="___new">➕ New Outfit…</option>
+          </select>
         </div>
       </div>
 
@@ -528,6 +536,53 @@
         <input type="text" class="bio-custom-label" name="system.bio.custom.{{@index}}.label" value="{{this.label}}" placeholder="Field Name"/>
         <textarea name="system.bio.custom.{{@index}}.value" rows="2" placeholder="Value...">{{this.value}}</textarea>
         <button type="button" class="del-row" data-type="bioCustom" data-index="{{@index}}">✕</button>
+      </div>
+      {{/each}}
+
+      <div class="section-title" style="margin-top:1.5rem">Outfits <button type="button" class="outfit-add add-row">+ New Outfit</button></div>
+      {{#unless outfits.length}}
+      <p style="font-size:11px;color:#7a8090;margin:4px 0 8px;">Create an outfit to bundle a portrait + token art set (fine / &lt;50% HP / critical / down). Switch outfits from the dropdown in the header — the sheet portrait, token art, and HUD variants all change together.</p>
+      {{/unless}}
+      {{#each outfits}}
+      <div class="outfit-card" data-id="{{this.id}}" style="background:#1a1c20;border:1px solid {{#if (eq this.id ../activeOutfit)}}#c8a84b{{else}}#3a3f4a{{/if}};border-radius:6px;padding:8px 10px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <input type="text" class="outfit-name" value="{{this.name}}" style="flex:1;background:#222428;border:1px solid #3a3f4a;color:#e8c86a;border-radius:3px;padding:2px 8px;font-weight:700;"/>
+          {{#if (eq this.id ../activeOutfit)}}<span style="font-size:9px;color:#c8a84b;border:1px solid #c8a84b;border-radius:3px;padding:1px 6px;letter-spacing:1px;">WEARING</span>
+          {{else}}<button type="button" class="outfit-apply" style="font-size:10px;padding:2px 10px;">Wear</button>{{/if}}
+          <button type="button" class="outfit-del del-row" title="Delete outfit">✕</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;">
+          <div class="outfit-img-cell" data-slot="portrait" title="Portrait — sheet & HUD image (click to browse)" style="cursor:pointer;text-align:center;">
+            <div style="height:64px;background:#222428;border:1px dashed #3a3f4a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;">
+              {{#if this.portrait}}<img src="{{this.portrait}}" style="max-height:100%;max-width:100%;object-fit:contain;"/><button type="button" class="outfit-img-clear" title="Clear" style="position:absolute;top:0;right:0;font-size:9px;padding:0 4px;">✕</button>{{else}}<span style="color:#3a3f4a;font-size:20px;">+</span>{{/if}}
+            </div>
+            <div style="font-size:9px;color:#7a8090;margin-top:2px;">PORTRAIT</div>
+          </div>
+          <div class="outfit-img-cell" data-slot="fine" title="Token — fine / healthy (click to browse)" style="cursor:pointer;text-align:center;">
+            <div style="height:64px;background:#222428;border:1px dashed #3a3f4a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;">
+              {{#if this.fine}}<img src="{{this.fine}}" style="max-height:100%;max-width:100%;object-fit:contain;"/><button type="button" class="outfit-img-clear" title="Clear" style="position:absolute;top:0;right:0;font-size:9px;padding:0 4px;">✕</button>{{else}}<span style="color:#3a3f4a;font-size:20px;">+</span>{{/if}}
+            </div>
+            <div style="font-size:9px;color:#7a8090;margin-top:2px;">TOKEN — FINE</div>
+          </div>
+          <div class="outfit-img-cell" data-slot="bloodied" title="Token — below 50% HP (click to browse)" style="cursor:pointer;text-align:center;">
+            <div style="height:64px;background:#222428;border:1px dashed #3a3f4a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;">
+              {{#if this.bloodied}}<img src="{{this.bloodied}}" style="max-height:100%;max-width:100%;object-fit:contain;"/><button type="button" class="outfit-img-clear" title="Clear" style="position:absolute;top:0;right:0;font-size:9px;padding:0 4px;">✕</button>{{else}}<span style="color:#3a3f4a;font-size:20px;">+</span>{{/if}}
+            </div>
+            <div style="font-size:9px;color:#e07a30;margin-top:2px;">&lt;50% HP</div>
+          </div>
+          <div class="outfit-img-cell" data-slot="critical" title="Token — critical condition, below 25% HP (click to browse)" style="cursor:pointer;text-align:center;">
+            <div style="height:64px;background:#222428;border:1px dashed #3a3f4a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;">
+              {{#if this.critical}}<img src="{{this.critical}}" style="max-height:100%;max-width:100%;object-fit:contain;"/><button type="button" class="outfit-img-clear" title="Clear" style="position:absolute;top:0;right:0;font-size:9px;padding:0 4px;">✕</button>{{else}}<span style="color:#3a3f4a;font-size:20px;">+</span>{{/if}}
+            </div>
+            <div style="font-size:9px;color:#e05555;margin-top:2px;">CRITICAL</div>
+          </div>
+          <div class="outfit-img-cell" data-slot="down" title="Token — Down / 0 HP (click to browse, optional)" style="cursor:pointer;text-align:center;">
+            <div style="height:64px;background:#222428;border:1px dashed #3a3f4a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;">
+              {{#if this.down}}<img src="{{this.down}}" style="max-height:100%;max-width:100%;object-fit:contain;"/><button type="button" class="outfit-img-clear" title="Clear" style="position:absolute;top:0;right:0;font-size:9px;padding:0 4px;">✕</button>{{else}}<span style="color:#3a3f4a;font-size:20px;">+</span>{{/if}}
+            </div>
+            <div style="font-size:9px;color:#7a8090;margin-top:2px;">DOWN</div>
+          </div>
+        </div>
       </div>
       {{/each}}
 

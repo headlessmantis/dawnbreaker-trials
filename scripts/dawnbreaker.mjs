@@ -1348,6 +1348,53 @@ window._dbCombatStatsPeek = (actorId, tokenId) => {
   return e ? (e.dealt ?? 0) : 0;
 };
 
+// ═══════════════════════════════════════════════════════════
+//  Outfits — named portrait/token image sets per actor
+//  Stored on the actor: flags.dawnbreaker-trials.outfits =
+//  { list: [{id, name, portrait, fine, bloodied, critical, down}], active }
+//  Applying an outfit updates: actor.img, prototype token, live linked
+//  tokens, and the HUD portraitVariants entry (GM direct / socket relay).
+// ═══════════════════════════════════════════════════════════
+async function _dbOutfitPushVariants(actorId, entry) {
+  if (game.user.isGM) {
+    const all = game.settings.get("dawnbreaker-trials", "portraitVariants") ?? {};
+    const prev = all[actorId] ?? {};
+    // Preserve condition portraits unless the outfit provides its own
+    if (!entry.conditions && prev.conditions) entry.conditions = prev.conditions;
+    for (const k of ["default", "bloodied", "critical", "down"]) if (!entry[k]) delete entry[k];
+    all[actorId] = entry;
+    await game.settings.set("dawnbreaker-trials", "portraitVariants", all);
+    CTBDisplay.refresh();
+    window.DawnbreakerPartyHUD?.render?.();
+  } else {
+    game.socket.emit("system.dawnbreaker-trials", { type: "outfitVariants", actorId, entry });
+  }
+}
+window._dbApplyOutfit = async function(actor, outfitId) {
+  const data = actor.getFlag("dawnbreaker-trials", "outfits") ?? { list: [], active: "" };
+  const o = (data.list ?? []).find(x => x.id === outfitId);
+  if (!o) { ui.notifications.warn("Outfit not found."); return; }
+  const portrait = o.portrait || o.fine || actor.img;
+  const tokenImg = o.fine || o.portrait || actor.prototypeToken?.texture?.src;
+  const updates = { "flags.dawnbreaker-trials.outfits.active": o.id };
+  if (portrait) updates.img = portrait;
+  if (tokenImg) updates["prototypeToken.texture.src"] = tokenImg;
+  await actor.update(updates);
+  // Live linked tokens on the canvas swap immediately (clear any damage-art stash)
+  if (tokenImg) {
+    for (const t of canvas.tokens?.placeables ?? []) {
+      if (t.actor?.id !== actor.id || !t.document.actorLink) continue;
+      if (!t.document.isOwner) continue;
+      await t.document.update({ "texture.src": tokenImg, "flags.dawnbreaker-trials.-=baseTokenImg": null }).catch(() => {});
+    }
+  }
+  // Feed the HUD + token damage-portrait systems
+  await _dbOutfitPushVariants(actor.id, {
+    default: portrait, bloodied: o.bloodied || "", critical: o.critical || "", down: o.down || "",
+  });
+  await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">👔 <b>${actor.name}</b> changes into <b>${o.name}</b>.</div>`, whisper: [game.user.id] });
+};
+
 function kennelMult(value, kennel) {
   if (kennel <= 0) return 0;
   return Math.floor(value * (kennel / 100));
@@ -2210,6 +2257,11 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     const allPortraitVars = game.settings.get("dawnbreaker-trials", "portraitVariants") ?? {};
     context.portraitVariants = allPortraitVars[actor.id] ?? {};
 
+    // Outfits — named portrait/token image sets stored on the actor
+    const outfitFlag = actor.getFlag("dawnbreaker-trials", "outfits") ?? { list: [], active: "" };
+    context.outfits = outfitFlag.list ?? [];
+    context.activeOutfit = outfitFlag.active ?? "";
+
     // Enrich ability arrays with macro icon images for the abilities tab
     const _macroImg = (name, macroName) => {
       const mn = macroName || name;
@@ -2395,6 +2447,80 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
       const entry = list[index];
       if (!entry) return;
       _executeMacroOrRoll(entry.macroName ?? entry.name, entry.rollFormula ?? "", this.actor, { name: entry.name });
+    });
+
+    // ── Outfit listeners ────────────────────────────────────
+    const _outfitData = () => foundry.utils.deepClone(this.actor.getFlag("dawnbreaker-trials", "outfits") ?? { list: [], active: "" });
+    const _saveOutfits = async (data) => { await this.actor.setFlag("dawnbreaker-trials", "outfits", data); };
+    const _newOutfit = async () => {
+      const name = await new Promise(res => {
+        new (foundry.appv1?.applications?.Dialog ?? Dialog)({
+          title: "New Outfit",
+          content: `<form style="font-family:sans-serif;"><label>Outfit name:</label><input id="of-name" type="text" value="" placeholder="e.g. Kaltafa Initiate Uniform" style="width:100%;"/></form>`,
+          buttons: { go: { label: "Create", callback: h => res(h.find("#of-name").val()?.trim() || "New Outfit") }, cancel: { label: "Cancel", callback: () => res(null) } },
+          close: () => res(null), default: "go",
+        }).render(true);
+      });
+      if (!name) return;
+      const data = _outfitData();
+      data.list.push({ id: foundry.utils.randomID(8), name, portrait: "", fine: "", bloodied: "", critical: "", down: "" });
+      await _saveOutfits(data);
+      this._tabs?.[0]?.activate?.("bio");
+      this.render(false);
+    };
+    html.find(".db-outfit-select").on("change", async (ev) => {
+      const val = ev.currentTarget.value;
+      if (val === "___new") { ev.currentTarget.value = _outfitData().active ?? ""; await _newOutfit(); return; }
+      if (val) await window._dbApplyOutfit(this.actor, val);
+    });
+    html.find(".outfit-add").click(() => _newOutfit());
+    html.find(".outfit-apply").click(async (ev) => {
+      const id = ev.currentTarget.closest(".outfit-card")?.dataset.id;
+      if (id) { await window._dbApplyOutfit(this.actor, id); this.render(false); }
+    });
+    html.find(".outfit-del").click(async (ev) => {
+      const card = ev.currentTarget.closest(".outfit-card");
+      const id = card?.dataset.id;
+      const data = _outfitData();
+      const o = data.list.find(x => x.id === id);
+      if (!o) return;
+      const ok = await (foundry.appv1?.applications?.Dialog ?? Dialog).confirm({ title: "Delete Outfit", content: `<p>Delete outfit <b>${o.name}</b>?</p>`, defaultYes: false });
+      if (!ok) return;
+      data.list = data.list.filter(x => x.id !== id);
+      if (data.active === id) data.active = "";
+      await _saveOutfits(data);
+      this.render(false);
+    });
+    html.find(".outfit-name").on("change", async (ev) => {
+      const id = ev.currentTarget.closest(".outfit-card")?.dataset.id;
+      const data = _outfitData();
+      const o = data.list.find(x => x.id === id);
+      if (o) { o.name = ev.currentTarget.value.trim() || o.name; await _saveOutfits(data); this.render(false); }
+    });
+    html.find(".outfit-img-cell").click(async (ev) => {
+      const cell = ev.currentTarget;
+      const id = cell.closest(".outfit-card")?.dataset.id;
+      const slot = cell.dataset.slot;
+      const data = _outfitData();
+      const o = data.list.find(x => x.id === id);
+      if (!o) return;
+      const FP = foundry.applications?.apps?.FilePicker?.implementation ?? FilePicker;
+      new FP({ type: "image", current: o[slot] || "", callback: async (path) => {
+        o[slot] = path;
+        await _saveOutfits(data);
+        // If this outfit is currently worn, re-apply so the change is live
+        if (data.active === id) await window._dbApplyOutfit(this.actor, id);
+        this.render(false);
+      } }).browse();
+    });
+    html.find(".outfit-img-clear").click(async (ev) => {
+      ev.stopPropagation();
+      const cell = ev.currentTarget.closest(".outfit-img-cell");
+      const id = cell?.closest(".outfit-card")?.dataset.id;
+      const slot = cell?.dataset.slot;
+      const data = _outfitData();
+      const o = data.list.find(x => x.id === id);
+      if (o && slot) { o[slot] = ""; await _saveOutfits(data); this.render(false); }
     });
 
     // ── Portrait variant listeners ─────────────────────────
@@ -10922,6 +11048,20 @@ Hooks.once("ready", () => {
     }
     if (data.type === "bossBanner") {
       _dbShowBossBanner(data.title, data.sub, data.color);
+      return;
+    }
+
+    // ── Outfit variants — player relays; GM writes the world setting ──
+    if (data.type === "outfitVariants" && game.user.isGM) {
+      const all = game.settings.get("dawnbreaker-trials", "portraitVariants") ?? {};
+      const prev = all[data.actorId] ?? {};
+      const entry = data.entry ?? {};
+      if (!entry.conditions && prev.conditions) entry.conditions = prev.conditions;
+      for (const k of ["default", "bloodied", "critical", "down"]) if (!entry[k]) delete entry[k];
+      all[data.actorId] = entry;
+      await game.settings.set("dawnbreaker-trials", "portraitVariants", all);
+      CTBDisplay.refresh();
+      window.DawnbreakerPartyHUD?.render?.();
       return;
     }
 
