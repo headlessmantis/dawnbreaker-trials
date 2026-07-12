@@ -109,6 +109,1245 @@ async function _dbResetCastProgress(centerToken, range = 4) {
 }
 window._dbResetCastProgress = _dbResetCastProgress;
 
+// ═══════════════════════════════════════════════════════════
+//  DBZones — persistent ground-effect zones (T3 expansion)
+//  Ground Scorch / Creeping Doom / Consecrated Ground /
+//  Lifebloom Field / Gravity Well
+// ═══════════════════════════════════════════════════════════
+// Zone: { id, name, color, casterActorId, casterTokenId, casterDisposition,
+//         tiles:[{x,y}], durationTurns (0 = permanent, ticks on caster turn),
+//         enter:  [{filter, effect}],   — on entering OR moving through a tile
+//         turnStart: [{filter, effect}] — for units starting their turn inside }
+// effect strings: "damage:hp:N" | "heal:hp:N" | "condition:<label>:<turns>"
+// filter: "enemy" | "ally" (relative to caster) | "all"
+const DB_ZONE_LAYER = "dbt.zones";
+const DBZones = {
+  getZones() { try { return game.settings.get("dawnbreaker-trials", "zoneState") ?? []; } catch (e) { return []; } },
+  async setZones(zones) { await game.settings.set("dawnbreaker-trials", "zoneState", zones); DBZones.draw(); },
+  async add(zone) {
+    zone.id = zone.id ?? foundry.utils.randomID();
+    const zones = DBZones.getZones();
+    zones.push(zone);
+    await DBZones.setZones(zones);
+    return zone.id;
+  },
+  async remove(id) { await DBZones.setZones(DBZones.getZones().filter(z => z.id !== id)); },
+  draw() {
+    try {
+      canvas.interface.grid.clearHighlightLayer(DB_ZONE_LAYER);
+      canvas.interface.grid.addHighlightLayer(DB_ZONE_LAYER);
+      const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+      for (const z of DBZones.getZones()) {
+        const color = Number(z.color ?? 0xff8800);
+        for (const t of z.tiles ?? []) {
+          canvas.interface.grid.highlightPosition(DB_ZONE_LAYER, { x: t.x * size, y: t.y * size, color, border: color, alpha: 0.22 });
+        }
+      }
+    } catch (e) {}
+  },
+  _matches(filter, actorToken, casterDisposition) {
+    if (filter === "all") return true;
+    const isAlly = actorToken.document.disposition === casterDisposition;
+    return filter === "ally" ? isAlly : !isAlly;
+  },
+  async _applyEffect(effect, actor, token, zoneName) {
+    const [kind, a, b] = String(effect).split(":");
+    if (kind === "damage") {
+      const cur = actor.system.hp?.current ?? 0;
+      const amt = parseInt(b) || 0;
+      if (amt > 0 && cur > 0) {
+        await window._dbApplyDamage({ type: "applyDamage", actorId: actor.id, tokenId: token.document?.id ?? token.id, newHP: Math.max(0, cur - amt), attackType: "magical", noBleed: true });
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🔥 <b>${zoneName}</b> — ${actor.name} takes <b>${amt}</b>.</div>` });
+      }
+    } else if (kind === "heal") {
+      const cur = actor.system.hp?.current ?? 0, max = actor.system.hp?.max ?? 0;
+      const amt = parseInt(b) || 0;
+      if (amt > 0 && cur > 0 && cur < max) {
+        await actor.update({ "system.hp.current": Math.min(max, cur + amt) });
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #81c784;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🌿 <b>${zoneName}</b> — ${actor.name} heals <b>+${amt}</b>.</div>` });
+      }
+    } else if (kind === "condition") {
+      const label = a, turns = parseInt(b) || 1;
+      const conds = foundry.utils.deepClone(actor.system.conditions ?? []).filter(c => c.label !== label);
+      const effVal = label === "slowed" ? "2" : "";
+      conds.push({ name: label.charAt(0).toUpperCase() + label.slice(1), label, duration: turns, instance: 0, effect: effVal });
+      await actor.update({ "system.conditions": conds });
+      await _applyStatusEffect(actor, label, true);
+    }
+  },
+  // Movement — fires for each tile stepped through (GM-side)
+  async onMove(tokenDoc, fromX, fromY) {
+    if (!game.user.isGM) return;
+    const zones = DBZones.getZones();
+    if (!zones.length) return;
+    const token = canvas.tokens.get(tokenDoc.id);
+    const actor = token?.actor;
+    if (!actor) return;
+    const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+    // Sample the straight-line path tile by tile
+    const x0 = Math.round(fromX / size), y0 = Math.round(fromY / size);
+    const x1 = Math.round(tokenDoc.x / size), y1 = Math.round(tokenDoc.y / size);
+    const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
+    const path = new Set();
+    for (let i = 1; i <= steps; i++) {
+      path.add(`${Math.round(x0 + (x1 - x0) * i / steps)},${Math.round(y0 + (y1 - y0) * i / steps)}`);
+    }
+    for (const z of zones) {
+      if (!z.enter?.length) continue;
+      const inPath = (z.tiles ?? []).some(t => path.has(`${t.x},${t.y}`));
+      if (!inPath) continue;
+      for (const eff of z.enter) {
+        if (!DBZones._matches(eff.filter ?? "enemy", token, z.casterDisposition)) continue;
+        await DBZones._applyEffect(eff.effect, actor, token, z.name);
+      }
+    }
+  },
+  // Turn start — apply turnStart effects; tick caster-owned durations
+  async onTurnStart(actor, tokenId) {
+    if (!game.user.isGM) return;
+    let zones = DBZones.getZones();
+    if (!zones.length) return;
+    const token = (tokenId ? canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === tokenId) : null) ?? _actorToken(actor);
+    const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+    if (token) {
+      const tx = Math.round(token.document.x / size), ty = Math.round(token.document.y / size);
+      for (const z of zones) {
+        if (!z.turnStart?.length) continue;
+        if (!(z.tiles ?? []).some(t => t.x === tx && t.y === ty)) continue;
+        for (const eff of z.turnStart) {
+          if (!DBZones._matches(eff.filter ?? "enemy", token, z.casterDisposition)) continue;
+          await DBZones._applyEffect(eff.effect, actor, token, z.name);
+        }
+      }
+    }
+    // Duration tick — zones expire on their caster's turn starts
+    const expired = [];
+    let dirty = false;
+    for (const z of zones) {
+      if (!z.durationTurns) continue; // permanent
+      const isCaster = (z.casterTokenId && z.casterTokenId === tokenId) || z.casterActorId === actor.id;
+      if (!isCaster) continue;
+      z.durationTurns -= 1; dirty = true;
+      if (z.durationTurns <= 0) expired.push(z);
+    }
+    if (dirty) {
+      zones = zones.filter(z => !expired.includes(z));
+      await DBZones.setZones(zones);
+      for (const z of expired) {
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">▨ <b>${z.name}</b> fades.</div>` });
+      }
+    }
+  },
+  // Tile builders
+  radiusTiles(cx, cy, r) {
+    const tiles = [];
+    for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++)
+      if (Math.abs(dx) + Math.abs(dy) <= r) tiles.push({ x: cx + dx, y: cy + dy });
+    return tiles;
+  },
+  lineTiles(x0, y0, dirX, dirY, len) {
+    const tiles = [];
+    for (let i = 1; i <= len; i++) tiles.push({ x: x0 + dirX * i, y: y0 + dirY * i });
+    return tiles;
+  },
+};
+window.DBZones = DBZones;
+Hooks.on("canvasReady", () => DBZones.draw());
+Hooks.on("preUpdateToken", (tokenDoc, changes) => {
+  if (changes.x !== undefined || changes.y !== undefined) tokenDoc._dbPrevPos = { x: tokenDoc.x, y: tokenDoc.y };
+});
+Hooks.on("updateToken", (tokenDoc, changes) => {
+  if ((changes.x !== undefined || changes.y !== undefined) && tokenDoc._dbPrevPos) {
+    const p = tokenDoc._dbPrevPos; delete tokenDoc._dbPrevPos;
+    DBZones.onMove(tokenDoc, p.x, p.y);
+    _dbT3OnMove(tokenDoc, p.x, p.y);
+  }
+});
+
+// Warpath / Colossus Grip movement side-effects (GM-side)
+async function _dbT3OnMove(tokenDoc, fromX, fromY) {
+  if (!game.user.isGM || !tokenDoc.actor) return;
+  const actor = tokenDoc.actor;
+  const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+  // Warpath — enemies passed take 4 HP
+  if (actor.getFlag("dawnbreaker-trials", "warpathActive")) {
+    const x0 = Math.round(fromX / size), y0 = Math.round(fromY / size);
+    const x1 = Math.round(tokenDoc.x / size), y1 = Math.round(tokenDoc.y / size);
+    const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
+    const path = new Set();
+    for (let i = 1; i < steps; i++) path.add(`${Math.round(x0 + (x1 - x0) * i / steps)},${Math.round(y0 + (y1 - y0) * i / steps)}`);
+    for (const t of canvas.tokens.placeables) {
+      if (!t.actor || t.document.disposition === tokenDoc.disposition) continue;
+      const tx = Math.round(t.document.x / size), ty = Math.round(t.document.y / size);
+      if (!path.has(`${tx},${ty}`)) continue;
+      const hp = t.actor.system.hp?.current ?? 0;
+      if (hp <= 0) continue;
+      await window._dbApplyDamage({ type: "applyDamage", actorId: t.actor.id, tokenId: t.document?.id ?? t.id, sourceActorId: actor.id, sourceTokenId: tokenDoc.id, newHP: Math.max(0, hp - 4), attackType: "physical", noBleed: true });
+      await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">💥 <b>Warpath</b> — ${t.actor.name} is trampled for <b>4</b>!</div>` });
+    }
+  }
+  // Colossus Grip releases if the gripper moves
+  const grip = actor.getFlag("dawnbreaker-trials", "colossusGrip");
+  if (grip?.targetTokenId) {
+    await actor.unsetFlag("dawnbreaker-trials", "colossusGrip");
+    const gt = canvas.tokens.placeables.find(t => t.document.id === grip.targetTokenId);
+    if (gt?.actor) {
+      const conds = (gt.actor.system.conditions ?? []).filter(c => c.label !== "immovable");
+      await gt.actor.update({ "system.conditions": conds });
+      await _applyStatusEffect(gt.actor, "immovable", false);
+      await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">🪨 <b>Colossus Grip</b> — ${actor.name} moved; ${gt.actor.name} is released.</div>` });
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  _dbT3 — T3-expansion ability runner
+//  All new class abilities live here; world macros are
+//  one-liners: `await window._dbT3.run("<Ability Name>")`.
+// ═══════════════════════════════════════════════════════════
+const _dbT3 = (() => {
+
+  // ── shared primitives ──────────────────────────────────────
+  const chat = (color, html) => ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid ${color};border-radius:6px;padding:8px 12px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">${html}</div>` });
+  const gsize = () => canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+  const tileOf = (t) => ({ x: Math.round(t.document.x / gsize()), y: Math.round(t.document.y / gsize()) });
+  const mdist = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+  const modOf = (v) => Math.floor((v ?? 0) / 3) - 3;
+  const statTotal = (actor, s) => actor.type === "npc" ? (actor.system.stats?.[s] ?? 0) : (actor.system.stats?.[s]?.total ?? 0);
+
+  function caster() {
+    const token = canvas.tokens.controlled[0];
+    const actor = token?.actor ?? null;
+    if (!actor) { ui.notifications.warn("Select your token first!"); return null; }
+    return { actor, token };
+  }
+  function applyUpdates(actor, token, updates) {
+    if (game.user.isGM || actor.isOwner) return actor.update(updates);
+    return game.socket.emit("system.dawnbreaker-trials", { type: "throwApply", actorId: actor.id, tokenId: token?.document?.id ?? token?.id, updates });
+  }
+  // Pay AP + KI. Blood Tithe: missing KI can be paid at 2 HP per 1 KI.
+  async function pay(actor, ap = 0, ki = 0) {
+    const curAP = actor.system.ctbAP ?? 0;
+    const curKI = actor.system.ki?.current ?? 0;
+    const updates = {};
+    if (ap) updates["system.ctbAP"] = Math.max(-100, curAP - ap);
+    if (ki) {
+      if (curKI >= ki) updates["system.ki.current"] = curKI - ki;
+      else if (_dbHasAbility(actor, "blood tithe")) {
+        const short = ki - curKI, hpCost = short * 2;
+        const curHP = actor.system.hp?.current ?? 0;
+        updates["system.ki.current"] = 0;
+        updates["system.hp.current"] = Math.max(0, curHP - hpCost);
+        await chat("#a03030", `🩸 <b>Blood Tithe</b> — ${actor.name} pays ${short} KI in blood (−${hpCost} HP).`);
+      } else { ui.notifications.warn(`Not enough KI! Need ${ki}, have ${curKI}.`); return false; }
+    }
+    await actor.update(updates);
+    if ((updates["system.hp.current"] ?? 1) <= 0) await _applyDownCondition(actor);
+    return true;
+  }
+  function precisionBonus(actor, token) {
+    let p = 0;
+    if (!(actor.system.turnPhase?.moved)) {
+      if (_dbHasAbility(actor, "deadcalm")) p += 2;
+      if (_dbHasAbility(actor, "nest instinct")) p += 1;
+    }
+    if (token && canvas.tokens.placeables.some(s => s.actor && s.document.disposition === token.document.disposition
+      && _dbHasAbility(s.actor, "spotter") && mdist(tileOf(s), tileOf(token)) <= 2)) p += 1;
+    return p;
+  }
+  // Standard tiered attack roll. Returns { d20, tier, dmg, isCrit } (dmg pre-application).
+  async function tiers({ actor, token, target, stat = "STR", dam = null, mult = 1, flatBonus = 0,
+    precision = 0, noGlance = false, forceCrit = false, magical = false, label = "Attack" }) {
+    const sVal   = statTotal(actor, stat);
+    const w      = actor.getRollData?.()?.weapon ?? {};
+    const wDam   = dam ?? (w.dam ?? 0);
+    const prof   = w.profLevel ?? 0;
+    const assist = window._getAssistBonus ? window._getAssistBonus(actor) : 0;
+    const weak   = parseInt((actor.system.conditions ?? []).find(c => c.label === "weakened")?.effect) || 0;
+    const tAR    = target.system.ar?.current ?? 0;
+    const tRes   = magical ? (statTotal(target, "MR")) : (statTotal(target, "PR"));
+    const raw    = Math.max(1, Math.round((sVal * mult)) + wDam + prof + assist + flatBonus - tAR - tRes);
+    const prec   = precision + precisionBonus(actor, token);
+    const glanceCap = noGlance ? 0 : Math.max(0, 6 - prof - assist);
+    const critFloor = Math.max(glanceCap + 2, 20 - prec);
+    const roll = await new Roll("1d20").evaluate();
+    const d20 = roll.total;
+    await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor }), flavor: `${label} — Effectiveness Roll` });
+    let tier, dmg, isCrit = false;
+    if (forceCrit || d20 >= critFloor) { tier = "CRITICAL HIT"; dmg = raw * 2; isCrit = true; }
+    else if (glanceCap > 0 && d20 <= glanceCap) { tier = "Glancing Blow"; dmg = Math.floor(raw * 0.5); }
+    else { tier = "Regular Hit"; dmg = raw; }
+    dmg = Math.max(1, dmg + assist - weak);
+    if (tAR <= 0) dmg *= 2;
+    return { d20, tier, dmg, isCrit };
+  }
+  async function applyHP(actor, token, target, targetToken, dmg, attackType = "physical") {
+    const cur = target.system.hp?.current ?? 0;
+    const data = { type: "applyDamage", actorId: target.id, tokenId: targetToken?.document?.id ?? targetToken?.id,
+      sourceActorId: actor.id, sourceTokenId: token?.document?.id ?? token?.id, newHP: Math.max(0, cur - dmg), attackType };
+    if (game.user.isGM) await window._dbApplyDamage(data);
+    else game.socket.emit("system.dawnbreaker-trials", data);
+  }
+  async function applyAR(actor, token, target, targetToken, dmg) {
+    const cur = target.system.ar?.current ?? 0;
+    const data = { type: "applyARDamage", actorId: target.id, tokenId: targetToken?.document?.id ?? targetToken?.id,
+      sourceActorId: actor.id, sourceTokenId: token?.document?.id ?? token?.id, newAR: Math.max(0, cur - dmg), attackType: "physical" };
+    if (game.user.isGM) await window._dbApplyDamage(data);
+    else game.socket.emit("system.dawnbreaker-trials", data);
+  }
+  async function addCond(target, targetToken, cond, statusId = null, replaceLabel = null) {
+    const conds = foundry.utils.deepClone(target.system.conditions ?? [])
+      .filter(c => !replaceLabel || c.label !== replaceLabel);
+    conds.push(cond);
+    await applyUpdates(target, targetToken, { "system.conditions": conds });
+    if (statusId) await _applyStatusEffect(target, statusId, true).catch(() => {});
+  }
+  async function pick(opts) {
+    const sel = await TargetSelector.select(opts);
+    if (!sel) return null;
+    return { token: sel.token, actor: sel.token.actor, affected: sel.affectedTokens };
+  }
+  // Consume Elemental Overload / Pact of Ruin on a cast's damage
+  async function castBonuses(actor) {
+    let forceCrit = false, flat = 0;
+    if (actor.getFlag("dawnbreaker-trials", "overloadCrit")) { forceCrit = true; await actor.unsetFlag("dawnbreaker-trials", "overloadCrit"); }
+    const pact = actor.getFlag("dawnbreaker-trials", "pactOfRuin");
+    if (pact?.bonus) { flat = pact.bonus; await actor.unsetFlag("dawnbreaker-trials", "pactOfRuin"); }
+    return { forceCrit, flat };
+  }
+  const oncePerCombat = async (actor, flag, name) => {
+    if (actor.getFlag("dawnbreaker-trials", flag)) { ui.notifications.warn(`${name} has already been used this combat.`); return false; }
+    await actor.setFlag("dawnbreaker-trials", flag, true);
+    return true;
+  };
+  // Straight-line dash used by Bull Rush / Steamroll
+  async function lineDash({ actor, token, maxTiles, dmgPer, prone = false, shove = false }) {
+    const t0 = tileOf(token);
+    const dirs = { E: { x: 1, y: 0 }, W: { x: -1, y: 0 }, S: { x: 0, y: 1 }, N: { x: 0, y: -1 } };
+    const dir = await new Promise(res => {
+      new (foundry.appv1?.applications?.Dialog ?? Dialog)({
+        title: "Charge Direction",
+        content: `<p style="font-family:sans-serif;">Charge which direction?</p>`,
+        buttons: Object.fromEntries(Object.keys(dirs).map(d => [d, { label: d, callback: () => res(dirs[d]) }])),
+        close: () => res(null),
+      }).render(true);
+    });
+    if (!dir) return false;
+    const size = gsize();
+    let stop = t0, hit = [];
+    for (let i = 1; i <= maxTiles; i++) {
+      const nx = t0.x + dir.x * i, ny = t0.y + dir.y * i;
+      // wall check
+      let wall = false;
+      try { wall = CONFIG.Canvas.polygonBackends.move.testCollision(
+        { x: (nx - dir.x) * size + size / 2, y: (ny - dir.y) * size + size / 2 },
+        { x: nx * size + size / 2, y: ny * size + size / 2 }, { type: "move", mode: "any" }); } catch (e) {}
+      if (wall) break;
+      const occ = canvas.tokens.placeables.find(t => {
+        if (t.id === token.id || !t.actor) return false;
+        const tt = tileOf(t);
+        const tw = Math.max(1, Math.round(t.document.width ?? 1)), th = Math.max(1, Math.round(t.document.height ?? 1));
+        return nx >= tt.x && nx < tt.x + tw && ny >= tt.y && ny < tt.y + th;
+      });
+      if (occ) {
+        if (occ.document.disposition === token.document.disposition) break;                 // ally blocks
+        if (Math.max(Math.round(occ.document.width ?? 1), Math.round(occ.document.height ?? 1)) > 1) break; // large token stops the charge
+        hit.push(occ);
+        if (shove) {
+          // try to shove the body one tile perpendicular
+          for (const p of [{ x: dir.y, y: dir.x }, { x: -dir.y, y: -dir.x }]) {
+            const sx = nx + p.x, sy = ny + p.y;
+            const free = !canvas.tokens.placeables.some(t2 => t2.id !== occ.id && tileOf(t2).x === sx && tileOf(t2).y === sy);
+            if (free) { await occ.document.update({ x: sx * size, y: sy * size }); break; }
+          }
+        }
+        stop = { x: nx, y: ny };
+        if (!shove) break;
+        continue;
+      }
+      stop = { x: nx, y: ny };
+    }
+    if (stop.x === t0.x && stop.y === t0.y) { ui.notifications.warn("No room to charge that way."); return false; }
+    // land on last free tile (back off if a body still occupies it)
+    let land = stop;
+    while (canvas.tokens.placeables.some(t => t.id !== token.id && tileOf(t).x === land.x && tileOf(t).y === land.y)) {
+      land = { x: land.x - dir.x, y: land.y - dir.y };
+      if (land.x === t0.x && land.y === t0.y) break;
+    }
+    await token.document.update({ x: land.x * size, y: land.y * size });
+    for (const h of hit) {
+      const hp = h.actor.system.hp?.current ?? 0;
+      await applyHP(actor, token, h.actor, h, dmgPer);
+      if (prone) await addCond(h.actor, h, { name: "Prone", label: "prone", duration: 2, instance: 0, effect: "" }, "prone", "prone");
+    }
+    return { hit };
+  }
+
+  // ── ability registry ───────────────────────────────────────
+  const A = {};
+
+  // ══ CHARGER ══
+  A["Bull Rush"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 100)) return;
+    const mv = _getMVTotal(c.actor);
+    const res = await lineDash({ actor: c.actor, token: c.token, maxTiles: mv, dmgPer: 5, shove: true });
+    if (res) await chat("#e07a30", `🐂 <b>Bull Rush</b> — ${c.actor.name} charges! ${res.hit.length ? res.hit.map(h => h.actor.name).join(", ") + " take 5 HP." : "No one stood in the way."}`);
+  };
+  A["Shieldbreaker Charge"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Shieldbreaker Charge", abilityDesc: "STR HP attack + BRK/2 AR chip | breaks AR → +30 AP", abilityIcon: "🔨", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 1), range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 120)) return;
+    const r = await tiers({ actor: c.actor, token: c.token, target: sel.actor, stat: "STR", label: "Shieldbreaker Charge" });
+    await applyHP(c.actor, c.token, sel.actor, sel.token, r.dmg);
+    const tAR = sel.actor.system.ar?.current ?? 0;
+    if (tAR > 0) {
+      const brk = statTotal(c.actor, "BRK");
+      const chip = Math.max(1, Math.floor(brk / 2));
+      await applyAR(c.actor, c.token, sel.actor, sel.token, chip);
+      if (tAR - chip <= 0) { await c.actor.update({ "system.ctbAP": (c.actor.system.ctbAP ?? 0) + 30 }); await chat("#e8c86a", `🔨 <b>Shieldbreaker</b> — armor shattered! ${c.actor.name} refunds +30 AP.`); }
+    }
+    await chat("#e07a30", `🔨 <b>Shieldbreaker Charge</b> → ${sel.actor.name} | ${r.tier} — <b>${r.dmg}</b> HP`);
+  };
+  A["Reckless Might"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 50)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "recklessMight", { active: true, turns: 3 });
+    await chat("#e05555", `💢 <b>Reckless Might</b> — ${c.actor.name}: +4 HP damage dealt AND taken for 3 turns.`);
+  };
+
+  // ══ VANGUARD ══
+  A["Phalanx Wall"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 100)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "phalanxWall", true);
+    await chat("#64b5f6", `🛡 <b>Phalanx Wall</b> — allies adjacent to ${c.actor.name} take −20% AR damage. Breaks on movement.`);
+  };
+  A["Shield Slam"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!c.actor.items.some(i => i.type === "offhand" && i.system.equipped)) { ui.notifications.warn("Shield Slam requires an equipped shield!"); return; }
+    const sel = await pick({ abilityName: "Shield Slam", abilityDesc: "BRK AR attack | push 1 + Slowed | crit: Prone", abilityIcon: "🛡", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 1, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 110)) return;
+    const brk = statTotal(c.actor, "BRK");
+    const prof = c.actor.getRollData?.()?.weapon?.profLevel ?? 0;
+    const dmg = Math.max(1, brk + prof);
+    await applyAR(c.actor, c.token, sel.actor, sel.token, dmg);
+    const roll = await new Roll("1d20").evaluate();
+    await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: c.actor }), flavor: "Shield Slam" });
+    // push 1 away
+    if (!_dbHasAbility(sel.actor, "unstoppable")) {
+      const size = gsize(); const ct = tileOf(c.token), tt = tileOf(sel.token);
+      const dx = Math.sign(tt.x - ct.x), dy = Math.sign(tt.y - ct.y);
+      const nx = tt.x + dx, ny = tt.y + dy;
+      if (!canvas.tokens.placeables.some(t => t.id !== sel.token.id && tileOf(t).x === nx && tileOf(t).y === ny))
+        await sel.token.document.update({ x: nx * size, y: ny * size });
+    }
+    if (roll.total === 20) await addCond(sel.actor, sel.token, { name: "Prone", label: "prone", duration: 2, instance: 0, effect: "" }, "prone", "prone");
+    else await addCond(sel.actor, sel.token, { name: "Slowed (−2 MV)", label: "slowed", duration: 1, instance: 0, effect: "2" }, "slowed", "slowed");
+    await chat("#64b5f6", `🛡 <b>Shield Slam</b> → ${sel.actor.name} | AR −${dmg}, pushed${roll.total === 20 ? " + <b>PRONE</b>" : " + Slowed"}`);
+  };
+
+  // ══ PROWLER ══
+  A["Stealth"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 100)) return;
+    await _dbEnterStealth(c.actor);
+    await chat("#3a3f4a", `👤 <b>Stealth</b> — ${c.actor.name} slips from sight. Next attack cannot glance.`);
+  };
+  A["Shadowstep"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Shadowstep", abilityDesc: "Teleport to an enemy's back arc (≤3 tiles) — does not end your turn", abilityIcon: "🌀", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 3, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 50, 2)) return;
+    const size = gsize();
+    const facing = window._getFacing(sel.token);
+    const behind = { N: { x: 0, y: 1 }, S: { x: 0, y: -1 }, E: { x: -1, y: 0 }, W: { x: 1, y: 0 } }[facing];
+    const tt = tileOf(sel.token);
+    const dest = { x: tt.x + behind.x, y: tt.y + behind.y };
+    if (canvas.tokens.placeables.some(t => t.id !== c.token.id && tileOf(t).x === dest.x && tileOf(t).y === dest.y)) { ui.notifications.warn("The tile behind the target is occupied!"); return; }
+    await c.token.document.update({ x: dest.x * size, y: dest.y * size, "flags.about-face.direction": { N: 270, S: 90, E: 0, W: 180 }[facing] });
+    await chat("#3a3f4a", `🌀 <b>Shadowstep</b> — ${c.actor.name} appears behind ${sel.actor.name}. <span style="color:#7a8090;">(turn continues)</span>`);
+  };
+  A["Garrote"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Garrote", abilityDesc: "Back attack | DEX HP | applies Exposed (next hit ignores reactions)", abilityIcon: "🗡", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 1, range: 0 });
+    if (!sel) return;
+    if (!window._isAttackingFromBehind(sel.token, c.token)) { ui.notifications.warn("Garrote requires attacking from behind!"); return; }
+    if (!await pay(c.actor, 110)) return;
+    const noGlance = await _dbStealthNoGlance(c.actor);
+    const r = await tiers({ actor: c.actor, token: c.token, target: sel.actor, stat: "DEX", noGlance, label: "Garrote" });
+    await applyHP(c.actor, c.token, sel.actor, sel.token, r.dmg);
+    await addCond(sel.actor, sel.token, { name: "Exposed", label: "disabled", duration: 0, instance: 1, effect: "no-reactions" });
+    await chat("#a03030", `🗡 <b>Garrote</b> → ${sel.actor.name} | ${r.tier} — <b>${r.dmg}</b> HP + <b>Exposed</b>`);
+  };
+
+  // ══ SNIPER ══
+  A["Piercing Round"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Piercing Round", abilityDesc: "Line shot: first two tokens hit (full / half)", abilityIcon: "🏹", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 4), range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 120)) return;
+    const noGlance = await _dbStealthNoGlance(c.actor);
+    // first body in the line eats the full shot; the picked target may be second
+    const los = window._checkRangedLOS(c.token, sel.token, false);
+    const first = los.blocked && los.blockingToken?.actor ? los.blockingToken : sel.token;
+    const second = first.id === sel.token.id ? null : sel.token;
+    const r = await tiers({ actor: c.actor, token: c.token, target: first.actor, stat: "DEX", noGlance, label: "Piercing Round" });
+    await applyHP(c.actor, c.token, first.actor, first, r.dmg);
+    let line = `🏹 <b>Piercing Round</b> → ${first.actor.name} | ${r.tier} — <b>${r.dmg}</b> HP`;
+    if (second) { const half = Math.max(1, Math.floor(r.dmg / 2)); await applyHP(c.actor, c.token, second.actor, second, half); line += ` → pierces into ${second.actor.name} for <b>${half}</b>`; }
+    await chat("#c8a84b", line);
+  };
+  A["Spotter's Mark"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Spotter's Mark", abilityDesc: "Scan + Marked (allied attacks +2) for 2 turns", abilityIcon: "🔭", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 4) + 4, range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 60)) return;
+    await addCond(sel.actor, sel.token, { name: "Scan", label: "scan", duration: 0, instance: 0, effect: "" }, "scan", "scan");
+    await addCond(sel.actor, sel.token, { name: "Marked", label: "threatened", duration: 2, instance: 0, effect: "+2dmg" });
+    await chat("#c8a84b", `🔭 <b>Spotter's Mark</b> — ${sel.actor.name} is Scanned and <b>Marked</b> (+2 from all allies, 2 turns).`);
+  };
+  A["Displacement Shot"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Displacement Shot", abilityDesc: "BRK AR attack | drive target 2 tiles away", abilityIcon: "🏹", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 4), range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 100)) return;
+    const brk = statTotal(c.actor, "BRK");
+    const prof = c.actor.getRollData?.()?.weapon?.profLevel ?? 0;
+    const dmg = Math.max(1, brk + prof);
+    await applyAR(c.actor, c.token, sel.actor, sel.token, dmg);
+    if (!_dbHasAbility(sel.actor, "unstoppable")) {
+      const size = gsize(); const ct = tileOf(c.token); let tt = tileOf(sel.token);
+      const dx = Math.sign(tt.x - ct.x), dy = Math.sign(tt.y - ct.y);
+      for (let i = 0; i < 2; i++) {
+        const nx = tt.x + dx, ny = tt.y + dy;
+        if (canvas.tokens.placeables.some(t => t.id !== sel.token.id && tileOf(t).x === nx && tileOf(t).y === ny)) break;
+        tt = { x: nx, y: ny };
+      }
+      await sel.token.document.update({ x: tt.x * size, y: tt.y * size });
+    }
+    await chat("#c8a84b", `🏹 <b>Displacement Shot</b> → ${sel.actor.name} | AR −${dmg}, driven back.`);
+  };
+
+  // ══ SORCERER ══
+  A["Chain Arc"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Chain Arc", abilityDesc: "INT ×1.2 magical | arcs to nearest enemy ≤2 for half | Cast 9", abilityIcon: "⚡", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 5, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 100, 3)) return;
+    await CastQueue.queue({
+      actorId: c.actor.id, targetId: sel.actor.id, targetTokenId: sel.token.document?.id ?? sel.token.id,
+      casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Chain Arc", abilityIcon: "⚡", castSpeed: 9, attackType: "magical", apCost: 100, kiCost: 3,
+      onResolve: async (cst, target, targetToken) => {
+        if (!target) return;
+        const { forceCrit, flat } = await castBonuses(cst);
+        const r = await tiers({ actor: cst, token: _actorToken(cst), target, stat: "INT", mult: 1.2, flatBonus: flat, forceCrit, magical: true, noGlance: false, label: "Chain Arc" });
+        await applyHP(cst, _actorToken(cst), target, targetToken, r.dmg, "magical");
+        // arc to nearest enemy within 2 of the target
+        const tt = targetToken ?? _actorToken(target);
+        if (tt) {
+          const near = canvas.tokens.placeables.filter(t => t.actor && t.id !== tt.id
+            && t.document.disposition === tt.document.disposition && mdist(tileOf(t), tileOf(tt)) <= 2)
+            .sort((a, b) => mdist(tileOf(a), tileOf(tt)) - mdist(tileOf(b), tileOf(tt)))[0];
+          if (near) { const half = Math.max(1, Math.floor(r.dmg / 2)); await applyHP(cst, _actorToken(cst), near.actor, near, half, "magical"); await chat("#64b5f6", `⚡ <b>Chain Arc</b> leaps to ${near.actor.name} for <b>${half}</b>!`); }
+        }
+        await chat("#64b5f6", `⚡ <b>Chain Arc</b> → ${target.name} | ${r.tier} — <b>${r.dmg}</b> magical`);
+      },
+    });
+  };
+  A["Elemental Overload"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await oncePerCombat(c.actor, "overloadUsed", "Elemental Overload")) return;
+    if (!await pay(c.actor, 100)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "overloadCrit", true);
+    await chat("#e05555", `🔥 <b>Elemental Overload</b> — ${c.actor.name}'s next casted spell is a <b>guaranteed CRIT</b>.`);
+  };
+  A["Ground Scorch"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Ground Scorch", abilityDesc: "3-tile fire line toward target | 4 HP on enter/through/turn-start | 2 turns", abilityIcon: "🔥", targetType: "any", attacker: c.actor, attackerToken: c.token, reach: 4, range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 90, 2)) return;
+    const ct = tileOf(c.token), tt = tileOf(sel.token);
+    const dx = Math.abs(tt.x - ct.x) >= Math.abs(tt.y - ct.y) ? Math.sign(tt.x - ct.x) : 0;
+    const dy = dx === 0 ? Math.sign(tt.y - ct.y) : 0;
+    await DBZones.add({
+      name: "Ground Scorch", color: 0xff5522, casterActorId: c.actor.id, casterTokenId: c.token.document?.id,
+      casterDisposition: c.token.document.disposition, durationTurns: 2,
+      tiles: DBZones.lineTiles(ct.x, ct.y, dx || 1, dy, 3),
+      enter: [{ filter: "enemy", effect: "damage:hp:4" }],
+      turnStart: [{ filter: "enemy", effect: "damage:hp:4" }],
+    });
+    await chat("#e07a30", `🔥 <b>Ground Scorch</b> — ${c.actor.name} sets the ground ablaze (4 HP, 2 turns).`);
+  };
+
+  // ══ MAGUS ══
+  A["Counterspell Sigil"] = async () => {
+    const c = caster(); if (!c) return;
+    const queue = CastQueue.getQueue().filter(e => {
+      const tok = (e.casterTokenId ? canvas.tokens.placeables.find(t => t.document.id === e.casterTokenId) : null)
+        ?? canvas.tokens.placeables.find(t => t.actor?.id === e.actorId);
+      return tok && tok.document.disposition !== c.token.document.disposition;
+    });
+    if (!queue.length) { ui.notifications.warn("No enemy casts to counter."); return; }
+    const pickId = await new Promise(res => {
+      new (foundry.appv1?.applications?.Dialog ?? Dialog)({
+        title: "Counterspell Sigil",
+        content: `<form style="font-family:sans-serif;"><select id="cs-pick" style="width:100%;">${queue.map(e => `<option value="${e.id}">${e.abilityName} (${game.actors.get(e.actorId)?.name ?? "?"}) — ${e.apCurrent}/${e.apTotal}</option>`).join("")}</select></form>`,
+        buttons: { go: { label: "Counter!", callback: h => res(h.find("#cs-pick").val()) }, cancel: { label: "Cancel", callback: () => res(null) } },
+        close: () => res(null),
+      }).render(true);
+    });
+    if (!pickId) return;
+    const int = statTotal(c.actor, "INT");
+    const roll = await new Roll("1d20 + @m", { m: modOf(int) }).evaluate();
+    await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: c.actor }), flavor: "Counterspell Sigil — INT Check (DC 15)" });
+    const success = roll.total >= 15;
+    if (!await pay(c.actor, success ? 80 : 120, 2)) return;
+    if (success) {
+      const q2 = CastQueue.getQueue(); const entry = q2.find(e => e.id === pickId);
+      await CastQueue.setQueue(q2.filter(e => e.id !== pickId)); CTBDisplay.refresh();
+      await chat("#a080ff", `✖ <b>Counterspell Sigil</b> — ${c.actor.name} unravels <b>${entry?.abilityName ?? "the cast"}</b>! (${roll.total} ≥ 15)`);
+    } else {
+      await chat("#7a8090", `✖ <b>Counterspell Sigil</b> fizzles (${roll.total} &lt; 15) — the strain costs 120 AP.`);
+    }
+  };
+  A["Gravity Well"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Gravity Well", abilityDesc: "2-radius zone: Slowed + can't leave | Cast 7", abilityIcon: "🕳", targetType: "any", attacker: c.actor, attackerToken: c.token, reach: 4, range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 100, 3)) return;
+    const tt = tileOf(sel.token);
+    await CastQueue.queue({
+      actorId: c.actor.id, targetId: sel.actor.id, targetTokenId: sel.token.document?.id ?? sel.token.id,
+      casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Gravity Well", abilityIcon: "🕳", castSpeed: 7, attackType: "buff", apCost: 100, kiCost: 3,
+      onResolve: async (cst) => {
+        await DBZones.add({
+          name: "Gravity Well", color: 0x8844ff, casterActorId: cst.id, casterDisposition: _actorToken(cst)?.document?.disposition ?? 1,
+          durationTurns: 3, tiles: DBZones.radiusTiles(tt.x, tt.y, 2),
+          turnStart: [{ filter: "enemy", effect: "condition:slowed:1" }, { filter: "enemy", effect: "condition:immovable:1" }],
+        });
+        await chat("#a080ff", `🕳 <b>Gravity Well</b> — space collapses. Enemies inside are Slowed and rooted.`);
+      },
+    });
+  };
+  A["Mirror Ward"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 60, 2)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "mirrorWard", true);
+    await chat("#a080ff", `🪞 <b>Mirror Ward</b> — the next magical attack on ${c.actor.name} reflects half back.`);
+  };
+
+  // ══ CRUSADER ══
+  A["Consecrated Ground"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Consecrated Ground", abilityDesc: "2-radius zone, 3 turns: allies +1 HP / enemies 1 HP per turn", abilityIcon: "✝", targetType: "any", attacker: c.actor, attackerToken: c.token, reach: 3, range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 100, 3)) return;
+    const tt = tileOf(sel.token);
+    await DBZones.add({
+      name: "Consecrated Ground", color: 0xf5c518, casterActorId: c.actor.id, casterTokenId: c.token.document?.id,
+      casterDisposition: c.token.document.disposition, durationTurns: 3, tiles: DBZones.radiusTiles(tt.x, tt.y, 2),
+      turnStart: [{ filter: "ally", effect: "heal:hp:1" }, { filter: "enemy", effect: "damage:hp:1" }],
+    });
+    await chat("#f5c518", `✝ <b>Consecrated Ground</b> — ${c.actor.name} sanctifies the field (3 turns).`);
+  };
+  A["Oath of Iron"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Oath of Iron", abilityDesc: "Ally: HP Guard −30% (2 turns); you take +2 while it holds", abilityIcon: "⛓", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 2, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 80, 2)) return;
+    await addCond(sel.actor, sel.token, { name: "HP Guard (−30%)", label: "hpguard", duration: 2, instance: 0, effect: "-30%" }, "hpguard", "hpguard");
+    await c.actor.setFlag("dawnbreaker-trials", "oathBurden", { active: true, turns: 2 });
+    await chat("#64b5f6", `⛓ <b>Oath of Iron</b> — ${sel.actor.name} is warded (−30% HP dmg, 2 turns); ${c.actor.name} carries the burden (+2 taken).`);
+  };
+  A["Radiant Smite"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Radiant Smite", abilityDesc: "STR HP +SPR MOD | heal self for half damage dealt", abilityIcon: "✨", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 1), range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 120, 2)) return;
+    const sprM = modOf(statTotal(c.actor, "SPR"));
+    const r = await tiers({ actor: c.actor, token: c.token, target: sel.actor, stat: "STR", flatBonus: Math.max(0, sprM), label: "Radiant Smite" });
+    await applyHP(c.actor, c.token, sel.actor, sel.token, r.dmg);
+    const heal = Math.max(1, Math.floor(r.dmg / 2));
+    const hCur = c.actor.system.hp?.current ?? 0, hMax = c.actor.system.hp?.max ?? 0;
+    window._dbSetHealCredit?.(c.actor.id, c.token.document?.id, c.actor.name);
+    await c.actor.update({ "system.hp.current": Math.min(hMax, hCur + heal) });
+    await chat("#f5c518", `✨ <b>Radiant Smite</b> → ${sel.actor.name} | ${r.tier} — <b>${r.dmg}</b> HP; ${c.actor.name} heals <b>+${heal}</b>.`);
+  };
+
+  // ══ ADEPT ══
+  A["Triage"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 100, 4)) return;
+    await CastQueue.queue({
+      actorId: c.actor.id, casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Triage", abilityIcon: "✚", castSpeed: 11, attackType: "heal", apCost: 100, kiCost: 4,
+      onResolve: async (cst) => {
+        const cTok = _actorToken(cst); if (!cTok) return;
+        const sprM = modOf(statTotal(cst, "SPR"));
+        const amount = 8 + sprM;
+        const allies = canvas.tokens.placeables.filter(t => t.actor && t.id !== cTok.id
+          && t.document.disposition === cTok.document.disposition
+          && (t.actor.system.hp?.current ?? 0) > 0 && mdist(tileOf(t), tileOf(cTok)) <= 4)
+          .sort((a, b) => (a.actor.system.hp?.current ?? 0) - (b.actor.system.hp?.current ?? 0)).slice(0, 2);
+        for (const t of allies) {
+          const cur = t.actor.system.hp?.current ?? 0, max = t.actor.system.hp?.max ?? 0;
+          window._dbSetHealCredit?.(cst.id, cTok.document?.id, cst.name);
+          await t.actor.update({ "system.hp.current": Math.min(max, cur + amount) });
+        }
+        await chat("#81c784", `✚ <b>Triage</b> — ${cst.name} mends ${allies.map(t => t.actor.name).join(" and ") || "no one in range"} for <b>+${amount}</b> each.`);
+      },
+    });
+  };
+  A["Ki Transfusion"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Ki Transfusion", abilityDesc: "Transfer up to 15 KI, 1:1", abilityIcon: "💠", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 2, range: 0 });
+    if (!sel) return;
+    const myKI = c.actor.system.ki?.current ?? 0;
+    const maxGive = Math.min(15, myKI);
+    if (maxGive <= 0) { ui.notifications.warn("No KI to give!"); return; }
+    const amt = await new Promise(res => {
+      new (foundry.appv1?.applications?.Dialog ?? Dialog)({
+        title: "Ki Transfusion",
+        content: `<form style="font-family:sans-serif;"><label>Transfer to ${sel.actor.name} (max ${maxGive}):</label><input id="kt-amt" type="number" min="1" max="${maxGive}" value="${maxGive}" style="width:80px;"/></form>`,
+        buttons: { go: { label: "Transfer", callback: h => res(Math.min(maxGive, Math.max(1, parseInt(h.find("#kt-amt").val()) || 0))) }, cancel: { label: "Cancel", callback: () => res(0) } },
+        close: () => res(0),
+      }).render(true);
+    });
+    if (!amt) return;
+    if (!await pay(c.actor, 100)) return;
+    await c.actor.update({ "system.ki.current": myKI - amt });
+    const tKI = sel.actor.system.ki?.current ?? 0, tMax = sel.actor.system.ki?.max ?? 0;
+    await applyUpdates(sel.actor, sel.token, { "system.ki.current": Math.min(tMax, tKI + amt) });
+    await chat("#64b5f6", `💠 <b>Ki Transfusion</b> — ${c.actor.name} channels <b>${amt} KI</b> into ${sel.actor.name}.`);
+  };
+  A["Guardian Spirit"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Guardian Spirit", abilityDesc: "Ally survives their next Down at 1 HP | Cast 6", abilityIcon: "👻", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 3, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 100, 3)) return;
+    await CastQueue.queue({
+      actorId: c.actor.id, targetId: sel.actor.id, targetTokenId: sel.token.document?.id ?? sel.token.id,
+      casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Guardian Spirit", abilityIcon: "👻", castSpeed: 6, attackType: "heal", apCost: 100, kiCost: 3,
+      onResolve: async (cst, target) => {
+        if (!target) return;
+        await _dbSurviveDownGrant(target, "Guardian Spirit");
+        await chat("#a080ff", `👻 <b>Guardian Spirit</b> — a spirit watches over <b>${target.name}</b>. Their next fall is refused.`);
+      },
+    });
+  };
+  A["Cleansing Wave"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 90, 3)) return;
+    const BAD = ["weakened", "slowed", "blind", "burning", "poison", "crippled", "bleeding", "curse", "stun"];
+    const allies = canvas.tokens.placeables.filter(t => t.actor
+      && t.document.disposition === c.token.document.disposition && mdist(tileOf(t), tileOf(c.token)) <= 4);
+    const lines = [];
+    for (const t of allies) {
+      const before = t.actor.system.conditions ?? [];
+      const kept = before.filter(cd => !BAD.includes((cd.label ?? "").toLowerCase()));
+      let removed = before.length - kept.length;
+      const stacks = t.actor.getFlag("dawnbreaker-trials", "bleedStacks") ?? 0;
+      if (stacks > 0) { await t.actor.unsetFlag("dawnbreaker-trials", "bleedStacks"); removed += 1; }
+      if (!removed) continue;
+      for (const cd of before) if (!kept.includes(cd) && cd.label) await _applyStatusEffect(t.actor, cd.label, false).catch(() => {});
+      const cur = t.actor.system.hp?.current ?? 0, max = t.actor.system.hp?.max ?? 0;
+      window._dbSetHealCredit?.(c.actor.id, c.token.document?.id, c.actor.name);
+      await applyUpdates(t.actor, t, { "system.conditions": kept, "system.hp.current": Math.min(max, cur + removed) });
+      lines.push(`${t.actor.name} (−${removed} affliction${removed > 1 ? "s" : ""}, +${removed} HP)`);
+    }
+    await chat("#81c784", `🌊 <b>Cleansing Wave</b> — ${lines.length ? lines.join("; ") : "nothing to cleanse."}`);
+  };
+
+  // ══ JUGGERNAUT ══
+  A["Steamroll"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 150)) return;
+    const res = await lineDash({ actor: c.actor, token: c.token, maxTiles: _getMVTotal(c.actor), dmgPer: 6, prone: true, shove: true });
+    if (res) await chat("#e05555", `🚂 <b>Steamroll</b> — ${c.actor.name} flattens ${res.hit.length ? res.hit.map(h => h.actor.name).join(", ") + " (6 HP + Prone)" : "nothing but road"}.`);
+  };
+  A["Seismic Slam"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 130)) return;
+    const foes = canvas.tokens.placeables.filter(t => t.actor && t.document.disposition !== c.token.document.disposition && mdist(tileOf(t), tileOf(c.token)) <= 1);
+    if (!foes.length) { await chat("#7a8090", `🌋 <b>Seismic Slam</b> — no one in reach.`); return; }
+    const roll = await new Roll("1d20").evaluate();
+    await roll.toMessage({ speaker: ChatMessage.getSpeaker({ actor: c.actor }), flavor: "Seismic Slam — Effectiveness Roll" });
+    const isCrit = roll.total === 20;
+    const str = statTotal(c.actor, "STR");
+    const w = c.actor.getRollData?.()?.weapon ?? {};
+    for (const f of foes) {
+      const raw = Math.max(1, str + (w.dam ?? 0) + (w.profLevel ?? 0) - (f.actor.system.ar?.current ?? 0) - statTotal(f.actor, "PR"));
+      const dmg = (f.actor.system.ar?.current ?? 0) <= 0 ? raw * 2 : raw;
+      await applyHP(c.actor, c.token, f.actor, f, isCrit ? dmg * 2 : dmg);
+      if (isCrit) await addCond(f.actor, f, { name: "Prone", label: "prone", duration: 2, instance: 0, effect: "" }, "prone", "prone");
+    }
+    await chat("#e05555", `🌋 <b>Seismic Slam</b> — ${c.actor.name} hits ${foes.map(f => f.actor.name).join(", ")}${isCrit ? " — <b>CRIT! All Prone!</b>" : ""}`);
+  };
+  A["Colossus Grip"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Colossus Grip", abilityDesc: "Grapple: target Immovable; your attacks vs it +3", abilityIcon: "🪨", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 1, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 110)) return;
+    await addCond(sel.actor, sel.token, { name: "Immovable", label: "immovable", duration: 0, instance: 0, effect: "colossus" }, "immovable", "immovable");
+    await c.actor.setFlag("dawnbreaker-trials", "colossusGrip", { targetTokenId: sel.token.document?.id ?? sel.token.id, targetActorId: sel.actor.id });
+    await chat("#e07a30", `🪨 <b>Colossus Grip</b> — ${c.actor.name} seizes ${sel.actor.name}. Immovable; +3 to the Juggernaut's attacks against them.`);
+  };
+  A["Warpath"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await oncePerCombat(c.actor, "warpathUsed", "Warpath")) return;
+    if (!await pay(c.actor, 100)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "warpathActive", true);
+    await chat("#e05555", `💥 <b>Warpath</b> — until ${c.actor.name}'s next turn: movement ignores Sentinel/Menace, trampled enemies take 4 HP, and the charge may end in a free BRK attack.`);
+  };
+
+  // ══ BULWARK ══
+  A["Aegis Dome"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 150, 3)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "aegisDome", true);
+    await chat("#64b5f6", `🏰 <b>Aegis Dome</b> — allies within 2 of ${c.actor.name} take −30% HP damage. Breaks on movement.`);
+  };
+  A["Rally Point"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 100)) return;
+    const allies = canvas.tokens.placeables.filter(t => t.actor && t.id !== c.token.id
+      && t.document.disposition === c.token.document.disposition && mdist(tileOf(t), tileOf(c.token)) <= 3);
+    for (const t of allies) await applyUpdates(t.actor, t, { "system.ctbAP": (t.actor.system.ctbAP ?? 0) + 15 });
+    await chat("#e8c86a", `🚩 <b>Rally Point</b> — ${allies.map(t => t.actor.name).join(", ") || "no one"} gains <b>+15 AP</b>.`);
+  };
+  A["Fortress Toss"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!c.actor.items.some(i => i.type === "offhand" && i.system.equipped)) { ui.notifications.warn("Fortress Toss requires an equipped shield!"); return; }
+    const sel = await pick({ abilityName: "Fortress Toss", abilityDesc: "Thrown shield: BRK AR attack + Threatened (2 turns)", abilityIcon: "🛡", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 4, range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 120)) return;
+    const dmg = Math.max(1, statTotal(c.actor, "BRK") + (c.actor.getRollData?.()?.weapon?.profLevel ?? 0));
+    await applyAR(c.actor, c.token, sel.actor, sel.token, dmg);
+    await addCond(sel.actor, sel.token, { name: "Threatened", label: "threatened", duration: 2, instance: 0, effect: c.actor.id }, "threatened", "threatened");
+    await chat("#64b5f6", `🛡 <b>Fortress Toss</b> → ${sel.actor.name} | AR −${dmg} + <b>Threatened</b> by ${c.actor.name} (2 turns). The shield returns.`);
+  };
+
+  // ══ PHANTOM ══
+  A["Killing Silence"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Killing Silence", abilityDesc: "Back attack | ×2 vs full-HP targets", abilityIcon: "🌑", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 1, range: 0 });
+    if (!sel) return;
+    if (!window._isAttackingFromBehind(sel.token, c.token)) { ui.notifications.warn("Killing Silence requires attacking from behind!"); return; }
+    if (!await pay(c.actor, 140)) return;
+    const noGlance = await _dbStealthNoGlance(c.actor);
+    const fullHP = (sel.actor.system.hp?.current ?? 0) >= (sel.actor.system.hp?.max ?? 1);
+    const r = await tiers({ actor: c.actor, token: c.token, target: sel.actor, stat: "DEX", noGlance, label: "Killing Silence" });
+    const dmg = fullHP ? r.dmg * 2 : r.dmg;
+    await applyHP(c.actor, c.token, sel.actor, sel.token, dmg);
+    await chat("#a03030", `🌑 <b>Killing Silence</b> → ${sel.actor.name} | ${r.tier}${fullHP ? " — <b>PERFECT OPENER ×2</b>" : ""} — <b>${dmg}</b> HP`);
+  };
+  A["Twin Shadows"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await oncePerCombat(c.actor, "twinShadowsUsed", "Twin Shadows")) return;
+    const sel = await pick({ abilityName: "Twin Shadows — First Strike", abilityDesc: "HP attack, then shadowstep 2 and strike another at half", abilityIcon: "👥", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 1), range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 120)) return;
+    const noGlance = await _dbStealthNoGlance(c.actor);
+    const r1 = await tiers({ actor: c.actor, token: c.token, target: sel.actor, stat: "DEX", noGlance, label: "Twin Shadows (1st)" });
+    await applyHP(c.actor, c.token, sel.actor, sel.token, r1.dmg);
+    const sel2 = await pick({ abilityName: "Twin Shadows — Second Strike", abilityDesc: "Different target within reach+2 | half damage", abilityIcon: "👥", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 1) + 2, range: 0 });
+    if (sel2 && sel2.token.id !== sel.token.id) {
+      // step up to 2 tiles toward the second target
+      const size = gsize(); let ct = tileOf(c.token); const tt = tileOf(sel2.token);
+      for (let i = 0; i < 2; i++) {
+        const dx = Math.sign(tt.x - ct.x), dy = Math.abs(tt.x - ct.x) > 0 ? 0 : Math.sign(tt.y - ct.y);
+        const nx = ct.x + dx, ny = ct.y + dy;
+        if (mdist({ x: nx, y: ny }, tt) < 1) break;
+        if (canvas.tokens.placeables.some(t => t.id !== c.token.id && tileOf(t).x === nx && tileOf(t).y === ny)) break;
+        ct = { x: nx, y: ny };
+      }
+      await c.token.document.update({ x: ct.x * size, y: ct.y * size });
+      const r2 = await tiers({ actor: c.actor, token: c.token, target: sel2.actor, stat: "DEX", noGlance: true, label: "Twin Shadows (2nd)" });
+      const half = Math.max(1, Math.floor(r2.dmg / 2));
+      await applyHP(c.actor, c.token, sel2.actor, sel2.token, half);
+      await chat("#a03030", `👥 <b>Twin Shadows</b> — ${sel.actor.name} takes <b>${r1.dmg}</b>, then ${sel2.actor.name} takes <b>${half}</b> from the dark.`);
+    } else {
+      await chat("#a03030", `👥 <b>Twin Shadows</b> — ${sel.actor.name} takes <b>${r1.dmg}</b>; the second shadow finds no mark.`);
+    }
+  };
+  A["Terror Mark"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Terror Mark", abilityDesc: "Weakened −3 (2 turns); attacking anyone but you = 5 HP backlash", abilityIcon: "😨", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 3, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 100)) return;
+    await addCond(sel.actor, sel.token, { name: "Weakened (−3 DMG)", label: "weakened", duration: 2, instance: 0, effect: "3" }, "weakened", "weakened");
+    await applyUpdates(sel.actor, sel.token, { "flags.dawnbreaker-trials.terrorMarkedBy": { actorId: c.actor.id, name: c.actor.name } });
+    await chat("#a080ff", `😨 <b>Terror Mark</b> — ${sel.actor.name} is Weakened (−3) and dreads ${c.actor.name}. Striking anyone else costs it 5 HP.`);
+  };
+
+  // ══ DEADEYE ══
+  A["Killshot"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await oncePerCombat(c.actor, "killshotUsed", "Killshot")) return;
+    const sel = await pick({ abilityName: "Killshot", abilityDesc: "Map-wide, ignores LOS | ×2 dmg, ×3 under 50% HP | Cast 4", abilityIcon: "☠", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 99, range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 200, 3)) return;
+    await CastQueue.queue({
+      actorId: c.actor.id, targetId: sel.actor.id, targetTokenId: sel.token.document?.id ?? sel.token.id,
+      casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Killshot", abilityIcon: "☠", castSpeed: 4, attackType: "physical", apCost: 200, kiCost: 3,
+      onResolve: async (cst, target, targetToken) => {
+        if (!target) return;
+        const { forceCrit, flat } = await castBonuses(cst);
+        const r = await tiers({ actor: cst, token: _actorToken(cst), target, stat: "DEX", flatBonus: flat, forceCrit, noGlance: true, label: "Killshot" });
+        const below = (target.system.hp?.current ?? 0) < (target.system.hp?.max ?? 1) * 0.5;
+        const dmg = r.dmg * (below ? 3 : 2);
+        await applyHP(cst, _actorToken(cst), target, targetToken, dmg);
+        await chat("#e05555", `☠ <b>KILLSHOT</b> → ${target.name} | ${r.tier} — <b>${dmg}</b> HP ${below ? "(×3 — wounded prey)" : "(×2)"}`);
+      },
+    });
+  };
+  A["Ricochet"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Ricochet", abilityDesc: "BRK AR (cannot glance) → nearest enemy ≤3 takes half", abilityIcon: "🏹", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 4), range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 120)) return;
+    const dmg = Math.max(1, statTotal(c.actor, "BRK") + (c.actor.getRollData?.()?.weapon?.profLevel ?? 0));
+    const arBefore = sel.actor.system.ar?.current ?? 0;
+    await applyAR(c.actor, c.token, sel.actor, sel.token, dmg);
+    const dealt = Math.min(arBefore, dmg);
+    const near = canvas.tokens.placeables.filter(t => t.actor && t.id !== sel.token.id
+      && t.document.disposition === sel.token.document.disposition && mdist(tileOf(t), tileOf(sel.token)) <= 3)
+      .sort((a, b) => mdist(tileOf(a), tileOf(sel.token)) - mdist(tileOf(b), tileOf(sel.token)))[0];
+    let line = `🏹 <b>Ricochet</b> → ${sel.actor.name} | AR −${dmg}`;
+    if (near && dealt > 0) { const half = Math.max(1, Math.floor(dealt / 2)); await applyAR(c.actor, c.token, near.actor, near, half); line += ` → caroms into ${near.actor.name} for AR −${half}`; }
+    await chat("#c8a84b", line);
+  };
+  A["Overwatch"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 130)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "coverFireActive", true);
+    await c.actor.setFlag("dawnbreaker-trials", "overwatchActive", true);
+    await chat("#64b5f6", `🎯 <b>Overwatch</b> — ${c.actor.name}'s counters now Slow their targets (−15 extra AP per shot). Breaks on movement.`);
+  };
+  A["Called Shot: Tendon"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Called Shot: Tendon", abilityDesc: "DEX HP attack | +2 turns of Crippled per hit (stacks)", abilityIcon: "🦵", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 4), range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 110)) return;
+    const noGlance = await _dbStealthNoGlance(c.actor);
+    const r = await tiers({ actor: c.actor, token: c.token, target: sel.actor, stat: "DEX", noGlance, label: "Called Shot: Tendon" });
+    await applyHP(c.actor, c.token, sel.actor, sel.token, r.dmg);
+    const conds = foundry.utils.deepClone(sel.actor.system.conditions ?? []);
+    const cr = conds.find(cd => cd.label === "crippled");
+    if (cr) cr.duration = (cr.duration ?? 0) + 2;
+    else conds.push({ name: "Crippled (MV 0)", label: "crippled", duration: 2, instance: 0, effect: "" });
+    await applyUpdates(sel.actor, sel.token, { "system.conditions": conds });
+    await _applyStatusEffect(sel.actor, "crippled", true).catch(() => {});
+    await chat("#c8a84b", `🦵 <b>Called Shot: Tendon</b> → ${sel.actor.name} | ${r.tier} — <b>${r.dmg}</b> HP + Crippled ${cr ? `extended to ${cr.duration}` : "(2)"} turns`);
+  };
+
+  // ══ WARLOCK ══
+  A["Umbral Lash"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Umbral Lash", abilityDesc: "INT magical HP + withering (2 HP/turn, 2 turns)", abilityIcon: "🌑", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 4, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 100, 2)) return;
+    const r = await tiers({ actor: c.actor, token: c.token, target: sel.actor, stat: "INT", magical: true, label: "Umbral Lash" });
+    await applyHP(c.actor, c.token, sel.actor, sel.token, r.dmg, "magical");
+    await addCond(sel.actor, sel.token, { name: "Withering", label: "poison", duration: 2, instance: 0, effect: "dot:hp:2" }, "poison");
+    await chat("#a080ff", `🌑 <b>Umbral Lash</b> → ${sel.actor.name} | ${r.tier} — <b>${r.dmg}</b> magical + Withering (2/turn).`);
+  };
+  A["Soul Rend"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Soul Rend", abilityDesc: "INT ×1.3 magical | heal a third of damage | Cast 8", abilityIcon: "💜", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 5, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 120, 4)) return;
+    await CastQueue.queue({
+      actorId: c.actor.id, targetId: sel.actor.id, targetTokenId: sel.token.document?.id ?? sel.token.id,
+      casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Soul Rend", abilityIcon: "💜", castSpeed: 8, attackType: "magical", apCost: 120, kiCost: 4,
+      onResolve: async (cst, target, targetToken) => {
+        if (!target) return;
+        const { forceCrit, flat } = await castBonuses(cst);
+        const r = await tiers({ actor: cst, token: _actorToken(cst), target, stat: "INT", mult: 1.3, flatBonus: flat, forceCrit, magical: true, label: "Soul Rend" });
+        await applyHP(cst, _actorToken(cst), target, targetToken, r.dmg, "magical");
+        const heal = Math.max(1, Math.floor(r.dmg / 3));
+        const cur = cst.system.hp?.current ?? 0, max = cst.system.hp?.max ?? 0;
+        window._dbSetHealCredit?.(cst.id, null, cst.name);
+        await cst.update({ "system.hp.current": Math.min(max, cur + heal) });
+        await chat("#a080ff", `💜 <b>Soul Rend</b> → ${target.name} | ${r.tier} — <b>${r.dmg}</b>; ${cst.name} keeps <b>+${heal}</b>.`);
+      },
+    });
+  };
+  A["Pact of Ruin"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await oncePerCombat(c.actor, "pactUsed", "Pact of Ruin")) return;
+    const curHP = c.actor.system.hp?.current ?? 0;
+    const maxPay = Math.floor(curHP / 2);
+    if (maxPay < 1) { ui.notifications.warn("Not enough HP to sacrifice."); return; }
+    const amt = await new Promise(res => {
+      new (foundry.appv1?.applications?.Dialog ?? Dialog)({
+        title: "Pact of Ruin",
+        content: `<form style="font-family:sans-serif;"><label>Sacrifice HP (max ${maxPay}) — next cast gains that much bonus damage:</label><input id="pr-amt" type="number" min="1" max="${maxPay}" value="${maxPay}" style="width:80px;"/></form>`,
+        buttons: { go: { label: "Sign", callback: h => res(Math.min(maxPay, Math.max(1, parseInt(h.find("#pr-amt").val()) || 0))) }, cancel: { label: "Cancel", callback: () => res(0) } },
+        close: () => res(0),
+      }).render(true);
+    });
+    if (!amt) return;
+    if (!await pay(c.actor, 50)) return;
+    await c.actor.update({ "system.hp.current": curHP - amt });
+    await c.actor.setFlag("dawnbreaker-trials", "pactOfRuin", { bonus: amt });
+    await chat("#a03030", `🩸 <b>Pact of Ruin</b> — ${c.actor.name} signs in blood (−${amt} HP). The next cast carries the debt (+${amt} damage).`);
+  };
+  A["Creeping Doom"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Creeping Doom", abilityDesc: "2-radius blight, 3 turns: 2 HP/turn + Weakened inside | Cast 7", abilityIcon: "☠", targetType: "any", attacker: c.actor, attackerToken: c.token, reach: 4, range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 110, 3)) return;
+    const tt = tileOf(sel.token);
+    await CastQueue.queue({
+      actorId: c.actor.id, targetId: sel.actor.id, targetTokenId: sel.token.document?.id ?? sel.token.id,
+      casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Creeping Doom", abilityIcon: "☠", castSpeed: 7, attackType: "buff", apCost: 110, kiCost: 3,
+      onResolve: async (cst) => {
+        await DBZones.add({
+          name: "Creeping Doom", color: 0x66aa33, casterActorId: cst.id, casterDisposition: _actorToken(cst)?.document?.disposition ?? 1,
+          durationTurns: 3, tiles: DBZones.radiusTiles(tt.x, tt.y, 2),
+          turnStart: [{ filter: "enemy", effect: "damage:hp:2" }, { filter: "enemy", effect: "condition:weakened:1" }],
+        });
+        await chat("#66aa33", `☠ <b>Creeping Doom</b> — the blight takes root.`);
+      },
+    });
+  };
+  A["Hex of Unmaking"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Hex of Unmaking", abilityDesc: "Cursed Reflection (WIL DC 10 to cast) for 3 turns", abilityIcon: "🌀", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 5, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 100, 3)) return;
+    await addCond(sel.actor, sel.token, { name: "Cursed Reflection", label: "curse", duration: 3, instance: 0, effect: "" }, "curse", "curse");
+    await chat("#a080ff", `🌀 <b>Hex of Unmaking</b> — ${sel.actor.name}'s magic turns traitor (WIL DC 10 to cast, 3 turns).`);
+  };
+
+  // ══ ORATOR ══
+  A["Rallying Cry"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 100, 2)) return;
+    const allies = canvas.tokens.placeables.filter(t => t.actor && t.id !== c.token.id
+      && t.document.disposition === c.token.document.disposition && mdist(tileOf(t), tileOf(c.token)) <= 3);
+    for (const t of allies) {
+      const conds = (t.actor.system.conditions ?? []);
+      const idx = conds.findIndex(cd => ["weakened", "blind"].includes((cd.label ?? "").toLowerCase()));
+      const updates = { "system.ctbAP": (t.actor.system.ctbAP ?? 0) + 10 };
+      if (idx >= 0) {
+        const kept = foundry.utils.deepClone(conds); const [rem] = kept.splice(idx, 1);
+        updates["system.conditions"] = kept;
+        if (rem.label) await _applyStatusEffect(t.actor, rem.label, false).catch(() => {});
+      }
+      await applyUpdates(t.actor, t, updates);
+    }
+    await chat("#e8c86a", `📯 <b>Rallying Cry</b> — ${allies.map(t => t.actor.name).join(", ") || "no one"}: +10 AP, doubts shed.`);
+  };
+  A["Condemn"] = async () => {
+    const c = caster(); if (!c) return;
+    const foe = await pick({ abilityName: "Condemn — the Guilty", abilityDesc: "Choose the enemy to condemn", abilityIcon: "⚖", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 4, range: 0, archingShot: true });
+    if (!foe) return;
+    const executioner = await pick({ abilityName: "Condemn — the Executioner", abilityDesc: "Choose the ally the guilty must face", abilityIcon: "⚖", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 99, range: 0 });
+    if (!executioner) return;
+    if (!await pay(c.actor, 100, 2)) return;
+    await addCond(foe.actor, foe.token, { name: "Threatened", label: "threatened", duration: 2, instance: 0, effect: executioner.actor.id }, "threatened", "threatened");
+    await addCond(foe.actor, foe.token, { name: "Weakened (−2 DMG)", label: "weakened", duration: 2, instance: 0, effect: "2" }, "weakened", "weakened");
+    await chat("#e8c86a", `⚖ <b>Condemn</b> — ${foe.actor.name} is sentenced: Weakened (−2), and must face <b>${executioner.actor.name}</b> (2 turns).`);
+  };
+  A["Battle Hymn"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 120, 3)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "battleHymn", true);
+    await chat("#e8c86a", `📯 <b>Battle Hymn</b> — allies within 3 of ${c.actor.name} deal +2 HP damage. Breaks if the Orator moves or is struck.`);
+  };
+  A["Silence in the Court"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 110, 3)) return;
+    if (game.user.isGM) {
+      const hit = await _dbResetCastProgress(c.token, 4);
+      await chat("#a080ff", `🤫 <b>Silence in the Court</b> — ${hit.length ? "casts reset to 0 CTB: " + hit.join(", ") : "no enemy casts within range."}`);
+    } else {
+      game.socket.emit("system.dawnbreaker-trials", { type: "silenceCourt", tokenId: c.token.document?.id ?? c.token.id });
+      await chat("#a080ff", `🤫 <b>Silence in the Court</b> — ${c.actor.name} overrides the incantations around them.`);
+    }
+  };
+  A["Final Word"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await oncePerCombat(c.actor, "finalWordUsed", "Final Word")) return;
+    const sel = await pick({ abilityName: "Final Word", abilityDesc: "Speak an ally's name — they act NEXT (AP → 100)", abilityIcon: "📜", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 5, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 150, 5)) return;
+    await applyUpdates(sel.actor, sel.token, { "system.ctbAP": 100 });
+    await chat("#e8c86a", `📜 <b>FINAL WORD</b> — ${c.actor.name} speaks, and the battle waits: <b>${sel.actor.name}</b> acts next!`);
+  };
+
+  // ══ TEMPLAR ══
+  A["Judgment Blade"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Judgment Blade", abilityDesc: "STR+SPR MOD attack | +50% vs those who hurt your allies | 1 AP + 3 KI", abilityIcon: "⚔", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: _dbWeaponReach(c.actor, 1), range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 1, 3)) return;
+    const sprM = Math.max(0, modOf(statTotal(c.actor, "SPR")));
+    const guilty = (window._dbCombatStatsPeek?.(sel.actor.id, sel.token?.document?.id) ?? 0) > 0;
+    const r = await tiers({ actor: c.actor, token: c.token, target: sel.actor, stat: "STR", flatBonus: sprM, label: "Judgment Blade" });
+    const dmg = guilty ? Math.round(r.dmg * 1.5) : r.dmg;
+    await applyHP(c.actor, c.token, sel.actor, sel.token, dmg);
+    await chat("#f5c518", `⚔ <b>Judgment Blade</b> → ${sel.actor.name} | ${r.tier}${guilty ? " — <b>JUDGED ×1.5</b>" : ""} — <b>${dmg}</b> HP`);
+  };
+  A["Divine Bastion"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 120, 4)) return;
+    await CastQueue.queue({
+      actorId: c.actor.id, casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Divine Bastion", abilityIcon: "🛡", castSpeed: 5, attackType: "heal", apCost: 120, kiCost: 4,
+      onResolve: async (cst) => {
+        const cTok = _actorToken(cst);
+        const allies = canvas.tokens.placeables.filter(t => t.actor && t.document.disposition === (cTok?.document?.disposition ?? 1));
+        const ids = [...new Set(allies.map(t => t.actor.id))];
+        await cst.setFlag("dawnbreaker-trials", "moonGuardian", { active: true, pool: 50, targetActorIds: ids });
+        await chat("#f5c518", `🛡 <b>Divine Bastion</b> — a 50-point ward covers the whole party.`);
+      },
+    });
+  };
+  A["Martyr's Chains"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Martyr's Chains", abilityDesc: "Half the ally's incoming HP damage redirects to YOU (range 4)", abilityIcon: "⛓", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 4, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 100, 2)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "martyrChains", { active: true, allyActorId: sel.actor.id });
+    await chat("#f5c518", `⛓ <b>Martyr's Chains</b> — ${c.actor.name} binds their fate to ${sel.actor.name}. Half their pain is now his.`);
+  };
+  A["Lightbrand"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await pay(c.actor, 100)) return;
+    await c.actor.setFlag("dawnbreaker-trials", "lightbrand", { armed: true });
+    await chat("#f5c518", `✨ <b>Lightbrand</b> — ${c.actor.name}'s weapon burns holy. The first foe struck will be <b>Branded</b> for the battle.`);
+  };
+  A["Your Fight Continues"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Your Fight Continues", abilityDesc: "Revive at 50% HP and AR | Cast 5 | 9 AP + 5 KI", abilityIcon: "🕊", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 3, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 9, 5)) return;
+    await CastQueue.queue({
+      actorId: c.actor.id, targetId: sel.actor.id, targetTokenId: sel.token.document?.id ?? sel.token.id,
+      casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Your Fight Continues", abilityIcon: "🕊", castSpeed: 5, attackType: "heal", apCost: 9, kiCost: 5,
+      onResolve: async (cst, target, targetToken) => {
+        if (!target) return;
+        const conds = (target.system.conditions ?? []).filter(cd => !["down", "prone", "sleep"].includes(cd.label));
+        const hpMax = target.system.hp?.max ?? 0, arMax = target.system.ar?.max ?? 0;
+        window._dbSetHealCredit?.(cst.id, null, cst.name);
+        await target.update({ "system.conditions": conds, "system.hp.current": Math.ceil(hpMax * 0.5), "system.ar.current": Math.ceil(arMax * 0.5) }, { allowHealDown: true });
+        await _applyStatusEffect(target, "down", false).catch(() => {});
+        await chat("#f5c518", `🕊 <b>YOUR FIGHT CONTINUES</b> — <b>${target.name}</b> rises at 50% HP and AR!`);
+      },
+    });
+  };
+
+  // ══ ORACLE ══
+  A["Rewind"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Rewind", abilityDesc: "Undo the last attack an ally took | Cast 6", abilityIcon: "⏪", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 4, range: 0 });
+    if (!sel) return;
+    if (!await pay(c.actor, 150, 5)) return;
+    await CastQueue.queue({
+      actorId: c.actor.id, targetId: sel.actor.id, targetTokenId: sel.token.document?.id ?? sel.token.id,
+      casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Rewind", abilityIcon: "⏪", castSpeed: 6, attackType: "heal", apCost: 150, kiCost: 5,
+      onResolve: async (cst, target, targetToken) => {
+        if (!target) return;
+        const key = targetToken?.document?.id ?? (target.isToken ? target.token?.id : target.id);
+        const snap = window._dbLastHit?.get(key) ?? window._dbLastHit?.get(target.id);
+        if (!snap) { await chat("#7a8090", `⏪ <b>Rewind</b> — no recorded blow to undo for ${target.name}.`); return; }
+        const wasDown = (target.system.hp?.current ?? 0) <= 0;
+        const updates = { "system.hp.current": snap.hpBefore };
+        if (wasDown && snap.hpBefore > 0) updates["system.conditions"] = (target.system.conditions ?? []).filter(cd => cd.label !== "down");
+        window._dbSetHealCredit?.(cst.id, null, cst.name);
+        await target.update(updates, { allowHealDown: true });
+        if (wasDown && snap.hpBefore > 0) await _applyStatusEffect(target, "down", false).catch(() => {});
+        await chat("#a080ff", `⏪ <b>Rewind</b> — the last blow against <b>${target.name}</b> never landed (HP → ${snap.hpBefore}).`);
+      },
+    });
+  };
+  A["Prophecy of Ruin"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Prophecy of Ruin", abilityDesc: "Scan + fate read (−2 PR/−2 MR for 2 turns)", abilityIcon: "🔮", targetType: "enemy", attacker: c.actor, attackerToken: c.token, reach: 5, range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 100, 3)) return;
+    await addCond(sel.actor, sel.token, { name: "Scan", label: "scan", duration: 0, instance: 0, effect: "" }, "scan", "scan");
+    await addCond(sel.actor, sel.token, { name: "Prophecy of Ruin (−2 PR/MR)", label: "curse", duration: 2, instance: 0, effect: "-2prmr" });
+    await chat("#a080ff", `🔮 <b>Prophecy of Ruin</b> — ${sel.actor.name}'s fate is read aloud: Scanned, −2 PR/MR (2 turns).`);
+  };
+  A["Lifebloom Field"] = async () => {
+    const c = caster(); if (!c) return;
+    const sel = await pick({ abilityName: "Lifebloom Field", abilityDesc: "PERMANENT 2-radius garden: allies +3 HP at turn start | Cast 5", abilityIcon: "🌸", targetType: "any", attacker: c.actor, attackerToken: c.token, reach: 4, range: 0, archingShot: true });
+    if (!sel) return;
+    if (!await pay(c.actor, 130, 4)) return;
+    const tt = tileOf(sel.token);
+    await CastQueue.queue({
+      actorId: c.actor.id, targetId: sel.actor.id, targetTokenId: sel.token.document?.id ?? sel.token.id,
+      casterTokenId: c.token.document?.id ?? c.token.id,
+      abilityName: "Lifebloom Field", abilityIcon: "🌸", castSpeed: 5, attackType: "heal", apCost: 130, kiCost: 4,
+      onResolve: async (cst) => {
+        await DBZones.add({
+          name: "Lifebloom Field", color: 0x66dd88, casterActorId: cst.id, casterDisposition: _actorToken(cst)?.document?.disposition ?? 1,
+          durationTurns: 0, tiles: DBZones.radiusTiles(tt.x, tt.y, 2),
+          turnStart: [{ filter: "ally", effect: "heal:hp:3" }],
+        });
+        await chat("#66dd88", `🌸 <b>Lifebloom Field</b> — a permanent garden takes root. Allies inside heal +3 at turn start.`);
+      },
+    });
+  };
+  A["Threads of Fate"] = async () => {
+    const c = caster(); if (!c) return;
+    const a1 = await pick({ abilityName: "Threads of Fate — First", abilityDesc: "Choose the first ally to swap", abilityIcon: "🧵", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 6, range: 0 });
+    if (!a1) return;
+    const a2 = await pick({ abilityName: "Threads of Fate — Second", abilityDesc: "Choose the second ally to swap", abilityIcon: "🧵", targetType: "ally", attacker: c.actor, attackerToken: c.token, reach: 6, range: 0 });
+    if (!a2 || a2.token.id === a1.token.id) { ui.notifications.warn("Pick two different allies."); return; }
+    if (!await pay(c.actor, 120, 3)) return;
+    const p1 = { x: a1.token.document.x, y: a1.token.document.y };
+    const p2 = { x: a2.token.document.x, y: a2.token.document.y };
+    await a1.token.document.update({ x: p2.x, y: p2.y });
+    await a2.token.document.update({ x: p1.x, y: p1.y });
+    await applyUpdates(a1.actor, a1.token, { "system.ctbAP": (a1.actor.system.ctbAP ?? 0) + 10 });
+    await applyUpdates(a2.actor, a2.token, { "system.ctbAP": (a2.actor.system.ctbAP ?? 0) + 10 });
+    await chat("#a080ff", `🧵 <b>Threads of Fate</b> — ${a1.actor.name} and ${a2.actor.name} trade places in destiny (+10 AP each).`);
+  };
+  A["Stillpoint"] = async () => {
+    const c = caster(); if (!c) return;
+    if (!await oncePerCombat(c.actor, "stillpointUsed", "Stillpoint")) return;
+    if (!await pay(c.actor, 100, 6)) return;
+    const state = CTB.getState();
+    const entry = (state.combatants ?? []).find(e => e.tokenId === (c.token.document?.id ?? c.token.id)) ?? (state.combatants ?? []).find(e => e.actorId === c.actor.id);
+    const orig = entry?.apTotal ?? null;
+    if (entry) { entry.apTotal = 3; await CTB.setState(state); CTBDisplay.refresh(); }
+    await c.actor.setFlag("dawnbreaker-trials", "stillpoint", { active: true, origApTotal: orig });
+    await chat("#a080ff", `⏳ <b>STILLPOINT</b> — until ${c.actor.name}'s next turn, <b>no ally within 7 tiles can fall below 1 HP</b>. Time itself slows for the Oracle (AP gain 3).`);
+  };
+
+  return {
+    run: async (name) => {
+      const fn = A[name];
+      if (!fn) { ui.notifications.error(`Unknown T3 ability: ${name}`); return; }
+      try { await fn(); } catch (e) { console.error(`T3 ability "${name}" failed:`, e); ui.notifications.error(`${name} failed — see console.`); }
+    },
+    list: () => Object.keys(A),
+  };
+})();
+window._dbT3 = _dbT3;
+
+// Peek helper for Judgment Blade — total damage this combat by a unit
+window._dbCombatStatsPeek = (actorId, tokenId) => {
+  const e = _combatStats?.[_cbKey(actorId, tokenId)] ?? _combatStats?.[actorId];
+  return e ? (e.dealt ?? 0) : 0;
+};
+
 function kennelMult(value, kennel) {
   if (kennel <= 0) return 0;
   return Math.floor(value * (kennel / 100));
@@ -3205,11 +4444,16 @@ let _dbMoveActiveTokenId = null; // token whose movement range is currently disp
 function _getMVTotal(actor) {
   let mv = actor.type === "npc" ? (actor.system.stats?.MV ?? 3) : (actor.system.stats?.MV?.total ?? 3);
   const conditions = actor.system.conditions ?? [];
+  // Unstoppable (Juggernaut) — +1 MV, immune to Slowed and Immovable
+  const unstoppable = _dbHasAbility(actor, "unstoppable");
+  if (unstoppable) mv += 1;
   // Crippled — MV drops to 0 until condition is removed
   if (conditions.some(c => c.label === "crippled" || c.name?.toLowerCase() === "crippled")) return 0;
+  // Immovable — rooted (grapples, Gravity Well)
+  if (!unstoppable && conditions.some(c => c.label === "immovable" || c.name?.toLowerCase() === "immovable")) return 0;
   // Slowed — reduce MV by the amount stored in effect (e.g. effect: "3" → −3 MV)
   const slowedCond = conditions.find(c => c.label === "slowed" || c.name?.toLowerCase() === "slowed");
-  if (slowedCond) mv = Math.max(0, mv - (parseInt(slowedCond.effect) || 0));
+  if (slowedCond && !unstoppable) mv = Math.max(0, mv - (parseInt(slowedCond.effect) || 0));
   return mv;
 }
 
@@ -3249,9 +4493,13 @@ async function _showMovementRange(token, mvOverride = null) {
         try { wallBlocked = canvas.walls.checkCollision(new Ray(fromCenter, toCenter), { type: "move" }); } catch(e2) {}
       }
       if (wallBlocked) continue;
+      // Phase Veil (Phantom): Stealthed movers pass through enemies.
+      // Warpath (Juggernaut): active flag ignores Sentinel/Menace (not bodies).
+      const phaseThrough = _dbHasAbility(actor, "phase veil") && _dbIsStealthed(actor);
+      const warpath      = !!actor.getFlag("dawnbreaker-trials", "warpathActive");
       // Cannot move onto or through a hostile unit — block its FULL footprint
       // (multi-tile enemies occupy width×height tiles, not just their corner).
-      const blocked = allTokens.some(t => {
+      const blocked = !phaseThrough && allTokens.some(t => {
         if (isAlly(t)) return false;
         const tx0 = Math.round(t.document.x / size), ty0 = Math.round(t.document.y / size);
         const tw  = Math.max(1, Math.round(t.document.width  ?? 1));
@@ -3261,7 +4509,7 @@ async function _showMovementRange(token, mvOverride = null) {
       if (blocked) continue;
 
       // Sentinel check — enemy Sentinel tokens block adjacent tiles for passage
-      const sentinelBlocked = allTokens.some(t => {
+      const sentinelBlocked = !warpath && !phaseThrough && allTokens.some(t => {
         if (!t.actor || isAlly(t)) return false;
         const hasSentinel = t.actor.items?.some(i => i.type === "ability" && i.name.toLowerCase().includes("sentinel"))
           || Object.values(t.actor.system.abilities ?? {}).some(arr =>
@@ -3276,7 +4524,7 @@ async function _showMovementRange(token, mvOverride = null) {
       if (sentinelBlocked) continue;
 
       // Menace check — enemy Menace tokens block tiles in front (facing direction, weapon reach)
-      const menaceBlocked = allTokens.some(t => {
+      const menaceBlocked = !warpath && !phaseThrough && allTokens.some(t => {
         if (!t.actor || isAlly(t)) return false;
         const hasMenace = t.actor.items?.some(i => i.type === "ability" && i.name.toLowerCase().includes("menace"))
           || Object.values(t.actor.system.abilities ?? {}).some(arr =>
@@ -3599,12 +4847,17 @@ Hooks.on("updateToken", async (tokenDoc, changes) => {
   // starting position (full MV) until the turn ends, so the player always sees
   // their original reachable area rather than a shrinking remainder.
 
-  // Clear Cover Fire stance when token moves
+  // Clear movement-broken stances when token moves
   if ((changes.x !== undefined || changes.y !== undefined) && tokenDoc.actor) {
-    const cfActive = tokenDoc.actor.getFlag("dawnbreaker-trials", "coverFireActive");
-    if (cfActive) {
-      await tokenDoc.actor.unsetFlag("dawnbreaker-trials", "coverFireActive");
-      await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">🎯 <b>Cover Fire</b> — ${tokenDoc.actor.name} moved. Cover Fire stance broken.</div>` });
+    const MOVE_BREAK_STANCES = [
+      ["coverFireActive", "🎯 Cover Fire"], ["overwatchActive", "🎯 Overwatch"],
+      ["phalanxWall", "🛡 Phalanx Wall"], ["aegisDome", "🏰 Aegis Dome"], ["battleHymn", "📯 Battle Hymn"],
+    ];
+    for (const [flag, label] of MOVE_BREAK_STANCES) {
+      if (tokenDoc.actor.getFlag("dawnbreaker-trials", flag)) {
+        await tokenDoc.actor.unsetFlag("dawnbreaker-trials", flag);
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">${label} — ${tokenDoc.actor.name} moved. Stance broken.</div>` });
+      }
     }
   }
 
@@ -4417,6 +5670,9 @@ async function _applyDownCondition(actor, { suppressChat = false } = {}) {
       savedBy = survive.source ?? "Guardian Spirit";
       oathGuard = /oath/i.test(savedBy);
       await actor.unsetFlag("dawnbreaker-trials", "surviveDown");
+    } else if (_dbHasAbility(actor, "unbreakable oath") && !actor.getFlag("dawnbreaker-trials", "unbreakableOathUsed")) {
+      savedBy = "Unbreakable Oath"; oathGuard = true;
+      await actor.setFlag("dawnbreaker-trials", "unbreakableOathUsed", true);
     } else {
       // Foresight: friendly token within 5 tiles whose actor has the ability and
       // an unspent once-per-combat charge (flag foresightUsed).
@@ -4451,6 +5707,18 @@ async function _applyDownCondition(actor, { suppressChat = false } = {}) {
   conditions.push({ name: "Down", label: "down", duration: 4, effect: "Unit is incapacitated. Removed from combat after 4 turns." });
   await actor.update({ "system.conditions": conditions });
   await _applyStatusEffect(actor, "down", true);
+
+  // Stillpoint ends immediately if the Oracle is Downed
+  const spDown = actor.getFlag("dawnbreaker-trials", "stillpoint");
+  if (spDown?.active) {
+    await actor.unsetFlag("dawnbreaker-trials", "stillpoint");
+    if (spDown.origApTotal != null) {
+      const stD = CTB.getState();
+      const cD = (stD.combatants ?? []).find(c => c.actorId === actor.id);
+      if (cD) { cD.apTotal = spDown.origApTotal; await CTB.setState(stD); CTBDisplay.refresh(); }
+    }
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⏳ <b>Stillpoint</b> shatters — its keeper has fallen.</div>` });
+  }
 
   // Cinematic KO — flash + burst + thud on every client
   const koToken = _actorToken(actor);
@@ -4536,6 +5804,56 @@ async function _applyDownCondition(actor, { suppressChat = false } = {}) {
 // ═══════════════════════════════════════════════════════════
 const DB_REACTIONS = {
   onHpDamage: [
+    {
+      // Kinetic Barrier (Sorcerer) — 2 KI: reduce incoming MAGICAL damage by INT MOD
+      match: "kinetic barrier",
+      canReact: (actor, dmg, attackType) => dmg > 0 && attackType === "magical" && (actor.system.ki?.current ?? 0) >= 2,
+      handler: async (actor, dmg) => {
+        const int = actor.system.stats?.INT?.total ?? 0;
+        const mod = Math.max(1, Math.floor(int / 3) - 3);
+        const reduced = Math.max(0, dmg - mod);
+        await actor.update({ "system.ki.current": Math.max(0, (actor.system.ki?.current ?? 0) - 2) });
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🔷 <b>Kinetic Barrier</b> — ${actor.name} absorbs ${dmg - reduced} magical damage (−2 KI)</div>` });
+        return reduced;
+      },
+    },
+    {
+      // Mirror Ward (Magus stance) — reflect half of one magical hit back at the attacker
+      match: "mirror ward",
+      canReact: (actor, dmg, attackType) => dmg > 0 && attackType === "magical" && !!actor.getFlag("dawnbreaker-trials", "mirrorWard"),
+      handler: async (actor, dmg, attackType, sourceActorId, sourceTokenId) => {
+        await actor.unsetFlag("dawnbreaker-trials", "mirrorWard");
+        const srcTok = (sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === sourceTokenId) : null)
+          ?? (sourceActorId ? canvas.tokens?.placeables?.find(t => t.actor?.id === sourceActorId) : null);
+        const src = srcTok?.actor ?? (sourceActorId ? game.actors.get(sourceActorId) : null);
+        const half = Math.floor(dmg / 2);
+        if (src && half > 0) {
+          const sHP = src.system.hp?.current ?? 0;
+          await src.update({ "system.hp.current": Math.max(0, sHP - half) });
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🪞 <b>Mirror Ward</b> — ${actor.name} reflects <b>${half}</b> back at ${src.name}!</div>` });
+          if ((sHP - half) <= 0) await _applyDownCondition(src);
+        }
+        return dmg;
+      },
+    },
+    {
+      // Retribution Plating (Bulwark) — front-arc attackers take 2 AR damage back
+      match: "retribution plating",
+      canReact: (actor, dmg) => dmg > 0,
+      handler: async (actor, dmg, attackType, sourceActorId, sourceTokenId) => {
+        const defTok = _actorToken(actor);
+        const srcTok = (sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === sourceTokenId) : null)
+          ?? (sourceActorId ? canvas.tokens?.placeables?.find(t => t.actor?.id === sourceActorId) : null);
+        if (defTok && srcTok?.actor && !window._isAttackingFromBehind(defTok, srcTok)) {
+          const sAR = srcTok.actor.system.ar?.current ?? 0;
+          if (sAR > 0) {
+            await srcTok.actor.update({ "system.ar.current": Math.max(0, sAR - 2) });
+            await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🏰 <b>Retribution Plating</b> — ${srcTok.actor.name}'s strike costs them 2 AR.</div>` });
+          }
+        }
+        return dmg;
+      },
+    },
     {
       // Ki Shield — spend KI 1:1 to reduce HP damage
       match: "ki shield",
@@ -5110,6 +6428,10 @@ window._dbSetHealCredit = _dbSetHealCredit;
 // on the recipient (source-agnostic, so it captures every heal path reliably).
 const _dbHpBefore = new Map();
 
+// Rewind (Oracle) — last damaging hit per unit: key → { hpBefore, at }
+const _dbLastHit = new Map();
+window._dbLastHit = _dbLastHit;
+
 // ── Reaction-prompt safety timeout ──────────────────────────────────────────
 // Damage-reducing reactions (Ki Shield, Soulbound Gale) send a prompt to a
 // player and the pipeline returns treating the hit as "handled" — the damage
@@ -5450,19 +6772,82 @@ window._dbApplyDamage = async (data) => {
 
     // ── T3-expansion condition adjusters (pre-reaction) ──────────────────────
     if (finalDmg > 0) {
+      const size3 = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+      const tile = (t) => ({ x: Math.round(t.document.x / size3), y: Math.round(t.document.y / size3) });
+      const mdist = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
       const srcTokAdj = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
         ?? (data.sourceActorId ? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId) : null);
       const srcActAdj = srcTokAdj?.actor ?? (data.sourceActorId ? game.actors.get(data.sourceActorId) : null);
       const defTokAdj = _actorToken(actor);
-      // Reckless Might — source deals +4, target takes +4 (stacking if both)
-      if (srcActAdj?.getFlag("dawnbreaker-trials", "recklessMight")?.active) finalDmg += 4;
+
+      // ── Source-side bonuses ──
+      if (srcActAdj) {
+        // Reckless Might — source deals +4
+        if (srcActAdj.getFlag("dawnbreaker-trials", "recklessMight")?.active) finalDmg += 4;
+        // Sanctified Arms (Templar) — +SPR MOD / 2, min 1
+        if (_dbHasAbility(srcActAdj, "sanctified arms")) {
+          const spr3 = srcActAdj.system.stats?.SPR?.total ?? 0;
+          finalDmg += Math.max(1, Math.floor((Math.floor(spr3 / 3) - 3) / 2));
+        }
+        // Aftershock (Charger) — +1 per tile moved this turn (max +5)
+        if (_dbHasAbility(srcActAdj, "aftershock") && srcTokAdj) {
+          const tp = srcActAdj.system.turnPhase ?? {};
+          if (tp.active && tp.startX != null) {
+            const moved = Math.abs(Math.round((srcTokAdj.document.x - tp.startX) / size3)) + Math.abs(Math.round((srcTokAdj.document.y - tp.startY) / size3));
+            if (moved >= 3) finalDmg += Math.min(5, moved);
+          }
+        }
+        // Battle Hymn (Orator) — +2 if an allied Orator with the stance is within 3 of the attacker
+        if (srcTokAdj && canvas.tokens.placeables.some(t => t.actor && t.document.disposition === srcTokAdj.document.disposition
+          && t.actor.getFlag("dawnbreaker-trials", "battleHymn") && mdist(tile(t), tile(srcTokAdj)) <= 3)) finalDmg += 2;
+        // Analytical Mind (Magus) — Scanned targets take +1 from the scanning side
+        if ((actor.system.conditions ?? []).some(c => (c.name ?? "").toLowerCase() === "scan")
+          && srcTokAdj && canvas.tokens.placeables.some(t => t.actor && t.document.disposition === srcTokAdj.document.disposition
+          && _dbHasAbility(t.actor, "analytical mind"))) finalDmg += 1;
+        // Marked (Spotter's Mark) — attacks deal +2
+        if ((actor.system.conditions ?? []).some(c => (c.name ?? "").toLowerCase() === "marked")) finalDmg += 2;
+      }
+
+      // ── Defender-side adjusters ──
+      // Reckless Might — target takes +4
       if (actor.getFlag("dawnbreaker-trials", "recklessMight")?.active) finalDmg += 4;
-      // Marked (Spotter's Mark) — attacks from the marker's side deal +2
-      if (srcActAdj && (actor.system.conditions ?? []).some(c => (c.name ?? "").toLowerCase() === "marked")) finalDmg += 2;
+      // Prophecy of Ruin — −2 PR/−2 MR read as +2 damage taken
+      if ((actor.system.conditions ?? []).some(c => (c.name ?? "").toLowerCase().includes("prophecy"))) finalDmg += 2;
+      // Oath of Iron — the Crusader carries +2 incoming while the oath holds
+      if (actor.getFlag("dawnbreaker-trials", "oathBurden")?.active) finalDmg += 2;
       // Hold the Line — unmoved defender, hit from front/side: −5 HP damage
       if (_dbHasAbility(actor, "hold the line") && !(actor.system.turnPhase?.moved) && srcTokAdj && defTokAdj
         && !window._isAttackingFromBehind(defTokAdj, srcTokAdj)) {
         finalDmg = Math.max(1, finalDmg - 5);
+      }
+      // Living Fortress (Bulwark) — unmoved: −3 vs the matching damage type
+      if (_dbHasAbility(actor, "living fortress") && !(actor.system.turnPhase?.moved)) {
+        finalDmg = Math.max(1, finalDmg - 3);
+      }
+      // Aegis Dome (Bulwark stance) — allies within 2 of the dome take −30%
+      if (defTokAdj && canvas.tokens.placeables.some(t => t.actor && t.id !== defTokAdj.id
+        && t.document.disposition === defTokAdj.document.disposition
+        && t.actor.getFlag("dawnbreaker-trials", "aegisDome") && mdist(tile(t), tile(defTokAdj)) <= 2)) {
+        finalDmg = Math.max(1, Math.round(finalDmg * 0.7));
+      }
+      // Martyr's Chains (Templar) — half the bound ally's damage redirects to the Templar
+      if (defTokAdj && finalDmg > 1) {
+        for (const t of canvas.tokens.placeables) {
+          if (!t.actor || t.id === defTokAdj.id || t.document.disposition !== defTokAdj.document.disposition) continue;
+          const mc = t.actor.getFlag("dawnbreaker-trials", "martyrChains");
+          if (!mc?.active || mc.allyActorId !== actor.id) continue;
+          if (mdist(tile(t), tile(defTokAdj)) > 4) continue;
+          const redirect = Math.floor(finalDmg / 2);
+          if (redirect > 0) {
+            finalDmg -= redirect;
+            const tHP = t.actor.system.hp?.current ?? 0;
+            const tNew = Math.max(0, tHP - redirect);
+            await t.actor.update({ "system.hp.current": tNew });
+            await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #f5c518;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⛓ <b>Martyr's Chains</b> — ${t.actor.name} takes <b>${redirect}</b> in ${actor.name}'s stead.</div>` });
+            if (tNew <= 0) { await CastQueue.cancelForActor(t.actor.id, "was downed", t.actor.isToken ? t.actor.token?.id : null); await _applyDownCondition(t.actor); }
+          }
+          break;
+        }
       }
     }
 
@@ -5538,8 +6923,52 @@ window._dbApplyDamage = async (data) => {
 
     // ── T3-expansion post-apply hooks ────────────────────────────────────────
     if (currentHP - newHP > 0) {
+      // Rewind (Oracle) — remember this hit so it can be undone
+      _dbLastHit.set(_cbKey(actor.id, data.tokenId ?? (actor.isToken ? actor.token?.id : null)), { hpBefore: currentHP, at: Date.now() });
       // Taking damage breaks Stealth
       if (_dbIsStealthed(actor)) await _dbBreakStealth(actor, "took damage");
+      // Battle Hymn breaks when the Orator takes HP damage
+      if (actor.getFlag("dawnbreaker-trials", "battleHymn")) {
+        await actor.unsetFlag("dawnbreaker-trials", "battleHymn");
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">📯 <b>Battle Hymn</b> — ${actor.name} was struck. The song falters.</div>` });
+      }
+      // Lightbrand (Templar) — the first target struck by the armed Templar is Branded
+      if (data.sourceActorId) {
+        const lbTok = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+          ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
+        const lbAct = lbTok?.actor ?? game.actors.get(data.sourceActorId);
+        if (lbAct?.getFlag("dawnbreaker-trials", "lightbrand")?.armed) {
+          await lbAct.unsetFlag("dawnbreaker-trials", "lightbrand");
+          const bConds = foundry.utils.deepClone(actor.system.conditions ?? []);
+          if (!bConds.some(c => (c.name ?? "").toLowerCase() === "branded")) {
+            bConds.push({ name: "Branded", label: "curse", duration: 0, instance: 0, effect: "lightbrand" });
+            await actor.update({ "system.conditions": bConds });
+            await _applyStatusEffect(actor, "curse", true);
+          }
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #f5c518;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">✨ <b>Lightbrand</b> — <b>${actor.name}</b> is Branded! Hits against it heal allies adjacent to it 2 HP + 2 AR.</div>` });
+        }
+      }
+      // Exit Wound (Phantom) — back attacks add a Bleed stack
+      if (data.sourceActorId) {
+        const ewTok = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+          ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
+        const ewDefTok = _actorToken(actor);
+        if (ewTok?.actor && ewDefTok && _dbHasAbility(ewTok.actor, "exit wound")
+          && window._isAttackingFromBehind(ewDefTok, ewTok)) {
+          const st = actor.getFlag("dawnbreaker-trials", "bleedStacks") ?? 0;
+          await actor.setFlag("dawnbreaker-trials", "bleedStacks", Math.min(10, st + 1));
+        }
+      }
+      // Momentum Engine (Juggernaut) — +10 AP on Down
+      if (newHP <= 0 && data.sourceActorId) {
+        const meTok = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+          ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
+        const meAct = meTok?.actor ?? game.actors.get(data.sourceActorId);
+        if (meAct && _dbHasAbility(meAct, "momentum engine")) {
+          await meAct.update({ "system.ctbAP": (meAct.system.ctbAP ?? 0) + 10 });
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚙ <b>Momentum Engine</b> — ${meAct.name} +10 AP.</div>` });
+        }
+      }
       // Branded (Lightbrand) — every hit on the branded target heals allies adjacent to it 2 HP + 2 AR
       if ((actor.system.conditions ?? []).some(c => (c.name ?? "").toLowerCase() === "branded")) {
         const bTok = _actorToken(actor);
@@ -5699,8 +7128,45 @@ window._dbApplyDamage = async (data) => {
           const newAR2 = Math.max(0, curAR2 - arDmg);
           await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #64b5f6;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🎯 <b>Cover Fire</b> — <b>${cfActor.name}</b> fires at <b>${attackerToken3.actor.name}</b>! AR −${arDmg} (BRK: ${cfBRK})</div>` });
           await window._dbApplyDamage({ type: "applyARDamage", actorId: attackerToken3.actor.id, tokenId: attackerToken3.document?.id ?? attackerToken3.id, sourceActorId: cfActor.id, newAR: newAR2, attackType: "physical" });
+          // Overwatch (Deadeye): counters also Slow the target, but cost an extra 15 AP.
+          // Nest Instinct: counters cost 10 less if the sniper hasn't moved this turn.
+          let cfCost = 30;
+          if (cfActor.getFlag("dawnbreaker-trials", "overwatchActive")) {
+            cfCost += 15;
+            const owConds = foundry.utils.deepClone(attackerToken3.actor.system.conditions ?? []).filter(c => c.label !== "slowed");
+            owConds.push({ name: "Slowed (−2 MV)", label: "slowed", duration: 1, instance: 0, effect: "2" });
+            await attackerToken3.actor.update({ "system.conditions": owConds });
+            await _applyStatusEffect(attackerToken3.actor, "slowed", true);
+          }
+          if (_dbHasAbility(cfActor, "nest instinct") && !(cfActor.system.turnPhase?.moved)) cfCost -= 10;
           const cfAP = cfActor.system.ctbAP ?? 0;
-          await cfActor.update({ "system.ctbAP": Math.max(-100, cfAP - 30) });
+          await cfActor.update({ "system.ctbAP": Math.max(-100, cfAP - cfCost) });
+        }
+      }
+    }
+
+    // ── Zealous Rebuke (Crusader) — adjacent ally hit → BRK counter at the attacker ──
+    if (reactionDmg > 0 && game.user.isGM && data.sourceActorId && !data._zealousRebuke) {
+      const zrAtkTok = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+        ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
+      const zrDefTok = _actorToken(actor);
+      if (zrAtkTok?.actor && zrDefTok) {
+        const sizeZ = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+        const zt = (t) => ({ x: Math.round(t.document.x / sizeZ), y: Math.round(t.document.y / sizeZ) });
+        const zd = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+        for (const zTok of canvas.tokens.placeables) {
+          if (!zTok.actor || zTok.id === zrDefTok.id || zTok.document.disposition !== zrDefTok.document.disposition) continue;
+          if (!_dbHasAbility(zTok.actor, "zealous rebuke")) continue;
+          if ((zTok.actor.system.ctbAP ?? 0) < 30) continue;
+          if (zd(zt(zTok), zt(zrDefTok)) > 1) continue;                              // must be adjacent to the ally
+          if (zd(zt(zTok), zt(zrAtkTok)) > _dbWeaponReach(zTok.actor, 1)) continue;  // attacker in weapon reach
+          const zBRK = zTok.actor.system.stats?.BRK?.total ?? zTok.actor.system.stats?.BRK?.base ?? 0;
+          const zDmg = Math.max(1, zBRK);
+          const zAR  = zrAtkTok.actor.system.ar?.current ?? 0;
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #f5c518;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">✝ <b>Zealous Rebuke</b> — <b>${zTok.actor.name}</b> strikes back at <b>${zrAtkTok.actor.name}</b>! AR −${zDmg}</div>` });
+          await window._dbApplyDamage({ type: "applyARDamage", actorId: zrAtkTok.actor.id, tokenId: zrAtkTok.document?.id ?? zrAtkTok.id, sourceActorId: zTok.actor.id, newAR: Math.max(0, zAR - zDmg), attackType: "physical", _zealousRebuke: true });
+          await zTok.actor.update({ "system.ctbAP": Math.max(-100, (zTok.actor.system.ctbAP ?? 0) - 30) });
+          break; // one rebuke per hit
         }
       }
     }
@@ -5737,7 +7203,28 @@ window._dbApplyDamage = async (data) => {
         && !window._isAttackingFromBehind(hlDefTok, hlSrcTok)) {
         arDmgAdj = Math.max(0, arDmgAdj - 2);
       }
+      // Phalanx Wall (Vanguard stance) — adjacent allies take −20% AR damage
+      if (hlDefTok) {
+        const sizeP = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+        const px2 = Math.round(hlDefTok.document.x / sizeP), py2 = Math.round(hlDefTok.document.y / sizeP);
+        if (canvas.tokens.placeables.some(t => t.actor && t.id !== hlDefTok.id
+          && t.document.disposition === hlDefTok.document.disposition
+          && t.actor.getFlag("dawnbreaker-trials", "phalanxWall")
+          && Math.abs(Math.round(t.document.x / sizeP) - px2) + Math.abs(Math.round(t.document.y / sizeP) - py2) <= 1)) {
+          arDmgAdj = Math.max(0, Math.round(arDmgAdj * 0.8));
+        }
+      }
       finalNewAR = Math.max(0, currentAR - arDmgAdj);
+    }
+    // Momentum Engine (Juggernaut) — +10 AP when the source breaks AR to 0
+    if (game.user.isGM && currentAR > 0 && finalNewAR === 0 && data.sourceActorId) {
+      const meTok2 = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+        ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
+      const meAct2 = meTok2?.actor ?? game.actors.get(data.sourceActorId);
+      if (meAct2 && _dbHasAbility(meAct2, "momentum engine")) {
+        await meAct2.update({ "system.ctbAP": (meAct2.system.ctbAP ?? 0) + 10 });
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚙ <b>Momentum Engine</b> — ${meAct2.name} +10 AP (armor broken).</div>` });
+      }
     }
     // Apply AR Guard condition check
     const arDmgAmount = currentAR - finalNewAR;
@@ -7141,7 +8628,13 @@ const CTBEngine = {
     for (const tokenDoc of tokens) {
       const actor = tokenDoc.actor;
       if (!actor || actor.getFlag("dawnbreaker-trials", "nonCombatant")) continue;
-      await (canvas.tokens.placeables.find(t => t.document.id === tokenDoc.id)?.actor ?? actor).update({ "system.ctbAP": 0 });
+      const liveActor = canvas.tokens.placeables.find(t => t.document.id === tokenDoc.id)?.actor ?? actor;
+      await liveActor.update({ "system.ctbAP": 0 });
+      // Veiled Entry (Phantom) — begin combat Stealthed
+      if (_dbHasAbility(liveActor, "veiled entry") && !_dbIsStealthed(liveActor)) {
+        await _dbEnterStealth(liveActor);
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">👤 <b>Veiled Entry</b> — ${liveActor.name} enters combat unseen.</div>` });
+      }
     }
     for (const tokenDoc of tokens) {
       const actor = tokenDoc.actor;
@@ -7327,6 +8820,38 @@ const CTBEngine = {
     if (!stillActive.length) await CTBEngine.tick();
   },
   async _onTurnStart(actor, combatants, callerTokenId = null) {
+    // Ground-effect zones — turn-start effects + caster-turn duration ticks
+    try { await DBZones.onTurnStart(actor, callerTokenId); } catch (e) { console.warn("DBZones turnStart failed", e); }
+
+    // ── T3 flag ticks on the owner's turn start ──
+    try {
+      // Reckless Might — 3-turn stance
+      const rm = actor.getFlag("dawnbreaker-trials", "recklessMight");
+      if (rm?.active) {
+        const left = (rm.turns ?? 1) - 1;
+        if (left <= 0) { await actor.unsetFlag("dawnbreaker-trials", "recklessMight");
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">💢 <b>Reckless Might</b> fades from ${actor.name}.</div>` });
+        } else await actor.setFlag("dawnbreaker-trials", "recklessMight", { ...rm, turns: left });
+      }
+      // Oath of Iron burden
+      const ob = actor.getFlag("dawnbreaker-trials", "oathBurden");
+      if (ob?.active) {
+        const left = (ob.turns ?? 1) - 1;
+        if (left <= 0) await actor.unsetFlag("dawnbreaker-trials", "oathBurden");
+        else await actor.setFlag("dawnbreaker-trials", "oathBurden", { ...ob, turns: left });
+      }
+      // Stillpoint — time resumes at the Oracle's next turn
+      const sp = actor.getFlag("dawnbreaker-trials", "stillpoint");
+      if (sp?.active) {
+        await actor.unsetFlag("dawnbreaker-trials", "stillpoint");
+        if (sp.origApTotal != null) {
+          const st9 = CTB.getState();
+          const c9 = (st9.combatants ?? []).find(c => c.tokenId === (callerTokenId ?? "") || c.actorId === actor.id);
+          if (c9) { c9.apTotal = sp.origApTotal; await CTB.setState(st9); CTBDisplay.refresh(); }
+        }
+        await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⏳ <b>Stillpoint</b> ends — time resumes for ${actor.name}.</div>` });
+      }
+    } catch (e) { console.warn("T3 flag ticks failed", e); }
     // Healing Beacon — must check BEFORE conditions early return since beacon has no conditions
     const beaconData = actor.getFlag("dawnbreaker-trials", "healingBeacon");
     if (beaconData?.active) {
@@ -7971,11 +9496,20 @@ class TargetSelector extends foundry.appv1.api.Application {
       // LOS check for ranged attacks (reach > 1) — straight line blocked by tokens/walls unless archingShot.
       // Only enemies require line of sight; support abilities on allies (heals,
       // buffs, cures) reach them regardless of who's standing in the way.
+      // Spotter (Deadeye aura): allies within 2 of a Spotter ignore token-LOS rules.
       const isEnemyTarget = t.document.disposition !== attackerDisp;
       let losBlocked = false;
       if (isEnemyTarget && attackerToken && this._reach > 1 && !this._archingShot && window._checkRangedLOS) {
-        const los = window._checkRangedLOS(attackerToken, t, false);
-        losBlocked = los.blocked;
+        const size9 = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+        const spotterAura = canvas.tokens.placeables.some(s => s.actor
+          && s.document.disposition === attackerToken.document.disposition
+          && window._dbHasAbility?.(s.actor, "spotter")
+          && Math.abs(Math.round(s.document.x / size9) - Math.round(attackerToken.document.x / size9))
+           + Math.abs(Math.round(s.document.y / size9) - Math.round(attackerToken.document.y / size9)) <= 2);
+        if (!spotterAura) {
+          const los = window._checkRangedLOS(attackerToken, t, false);
+          losBlocked = los.blocked;
+        }
       }
       return { tokenId: t.id, name: t.name, img: t.document.texture?.src ?? actor?.img, disposition: t.document.disposition, showStats, inRange: dist <= this._reach && dist >= this._minReach && !losBlocked, dist, losBlocked, hp: showStats ? actor?.system?.hp : null, ar: showStats ? actor?.system?.ar : null, ki: showStats ? actor?.system?.ki : null, conditions: actor?.system?.conditions ?? [] };
     };
@@ -9290,6 +10824,7 @@ Hooks.once("ready", () => {
   game.settings.register("dawnbreaker-trials", "undoStack", { scope: "world", config: false, type: Array, default: [] });
   game.settings.register("dawnbreaker-trials", "craftingLog", { scope: "world", config: false, type: String, default: "[]" });
   game.settings.register("dawnbreaker-trials", "growthPaths", { scope: "world", config: false, type: Array, default: [] });
+  game.settings.register("dawnbreaker-trials", "zoneState", { scope: "world", config: false, type: Array, default: [] });
 
   // ── Token health display ──
   game.settings.register("dawnbreaker-trials", "tokenHealthDisplay", {
@@ -9387,6 +10922,16 @@ Hooks.once("ready", () => {
     }
     if (data.type === "bossBanner") {
       _dbShowBossBanner(data.title, data.sub, data.color);
+      return;
+    }
+
+    // ── Silence in the Court — player relays; GM resets enemy cast progress ──
+    if (data.type === "silenceCourt" && game.user.isGM) {
+      const scTok = canvas.tokens.placeables.find(t => (t.document?.id ?? t.id) === data.tokenId);
+      if (scTok) {
+        const hit = await _dbResetCastProgress(scTok, 4);
+        if (hit.length) await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🤫 <b>Silence in the Court</b> — casts reset to 0 CTB: ${hit.join(", ")}</div>` });
+      }
       return;
     }
 
