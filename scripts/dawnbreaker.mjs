@@ -31,6 +31,84 @@ function _dbWeaponReach(actor, fallback = 1) {
 }
 window._dbWeaponReach = _dbWeaponReach;
 
+// Generic learned-ability check — item abilities OR schema ability slots.
+// (Same pattern used inline for Menace/Ambush/Bleeder/Sacrificial Lamb.)
+function _dbHasAbility(actor, name) {
+  const n = String(name).toLowerCase();
+  return !!(actor?.items?.some(i => i.type === "ability" && i.name?.toLowerCase().includes(n))
+    || Object.values(actor?.system?.abilities ?? {}).some(arr =>
+        Array.isArray(arr) && arr.some(a => a?.name?.toLowerCase().includes(n))));
+}
+window._dbHasAbility = _dbHasAbility;
+
+// ── Stealth system (T3 expansion) ────────────────────────────────────────────
+// Stealthed = condition {name:"Stealthed", label:"invisible"}. Rules:
+//  - cannot be targeted normally (TargetSelector excludes stealthed enemies)
+//  - attacking from Stealth cannot glance (attack macros call _dbStealthNoGlance)
+//  - attacking or taking damage breaks it (macros / damage pipeline)
+function _dbIsStealthed(actor) {
+  return (actor?.system?.conditions ?? []).some(c => (c.name ?? "").toLowerCase() === "stealthed");
+}
+async function _dbEnterStealth(actor) {
+  if (!actor || _dbIsStealthed(actor)) return;
+  const conds = foundry.utils.deepClone(actor.system.conditions ?? []);
+  conds.push({ name: "Stealthed", label: "invisible", duration: 0, instance: 0, effect: "stealth" });
+  await actor.update({ "system.conditions": conds });
+  await _applyStatusEffect(actor, "invisible", true);
+}
+async function _dbBreakStealth(actor, reason = "") {
+  if (!actor || !_dbIsStealthed(actor)) return false;
+  const conds = (actor.system.conditions ?? []).filter(c => (c.name ?? "").toLowerCase() !== "stealthed");
+  await actor.update({ "system.conditions": conds });
+  await _applyStatusEffect(actor, "invisible", false);
+  await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #3a3f4a;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#7a8090;">👤 <b>${actor.name}</b> is revealed${reason ? ` — ${reason}` : ""}.</div>` });
+  return true;
+}
+// Attack macros: returns true (and consumes Stealth) when the attack should
+// skip the glance tier. Call once at attack resolution.
+async function _dbStealthNoGlance(actor) {
+  if (!_dbIsStealthed(actor)) return false;
+  await _dbBreakStealth(actor, "attacked from Stealth");
+  return true;
+}
+window._dbIsStealthed     = _dbIsStealthed;
+window._dbEnterStealth    = _dbEnterStealth;
+window._dbBreakStealth    = _dbBreakStealth;
+window._dbStealthNoGlance = _dbStealthNoGlance;
+
+// ── Down interception (T3 expansion) ─────────────────────────────────────────
+// Grants a one-shot "survive the next Down at 1 HP" charge (Guardian Spirit /
+// Unbreakable Oath). Consumed inside _applyDownCondition before Down applies.
+async function _dbSurviveDownGrant(actor, sourceName) {
+  if (!actor) return;
+  await actor.setFlag("dawnbreaker-trials", "surviveDown", { active: true, source: sourceName ?? "Guardian Spirit" });
+}
+window._dbSurviveDownGrant = _dbSurviveDownGrant;
+
+// ── Cast-progress reset (Silence in the Court) ───────────────────────────────
+// Pushes every ENEMY cast whose caster token is within `range` tiles of
+// centerToken back to 0 charged AP. GM-side (cast queue is a world setting).
+async function _dbResetCastProgress(centerToken, range = 4) {
+  if (!game.user.isGM || !centerToken) return [];
+  const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+  const cx = Math.round(centerToken.document.x / size), cy = Math.round(centerToken.document.y / size);
+  const myDisp = centerToken.document.disposition;
+  const queue = CastQueue.getQueue();
+  const hit = [];
+  for (const e of queue) {
+    const tok = (e.casterTokenId ? canvas.tokens.placeables.find(t => t.document.id === e.casterTokenId) : null)
+      ?? canvas.tokens.placeables.find(t => t.actor?.id === e.actorId);
+    if (!tok || tok.document.disposition === myDisp) continue;
+    const dist = Math.abs(Math.round(tok.document.x / size) - cx) + Math.abs(Math.round(tok.document.y / size) - cy);
+    if (dist > range) continue;
+    e.apCurrent = 0;
+    hit.push(e.abilityName + " (" + (tok.actor?.name ?? "?") + ")");
+  }
+  if (hit.length) { await CastQueue.setQueue(queue); CTBDisplay.refresh(); }
+  return hit;
+}
+window._dbResetCastProgress = _dbResetCastProgress;
+
 function kennelMult(value, kennel) {
   if (kennel <= 0) return 0;
   return Math.floor(value * (kennel / 100));
@@ -4328,6 +4406,48 @@ async function _applyDownCondition(actor, { suppressChat = false } = {}) {
 
   const conditions = foundry.utils.deepClone(actor.system.conditions ?? []);
   if (conditions.some(c => c.name?.toLowerCase() === "down")) return;
+
+  // ── Down interception (Guardian Spirit / Unbreakable Oath / Foresight) ──
+  // A one-shot charge on the actor, or an Oracle with Foresight within 5 tiles,
+  // converts the Down into surviving at 1 HP.
+  {
+    const survive = actor.getFlag("dawnbreaker-trials", "surviveDown");
+    let savedBy = null, oathGuard = false, oracleActor = null;
+    if (survive?.active) {
+      savedBy = survive.source ?? "Guardian Spirit";
+      oathGuard = /oath/i.test(savedBy);
+      await actor.unsetFlag("dawnbreaker-trials", "surviveDown");
+    } else {
+      // Foresight: friendly token within 5 tiles whose actor has the ability and
+      // an unspent once-per-combat charge (flag foresightUsed).
+      const dTok = _actorToken(actor);
+      if (dTok) {
+        const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+        const dx = Math.round(dTok.document.x / size), dy = Math.round(dTok.document.y / size);
+        for (const t of canvas.tokens?.placeables ?? []) {
+          if (!t.actor || t.document.disposition !== dTok.document.disposition) continue;
+          if (!_dbHasAbility(t.actor, "foresight")) continue;
+          if (t.actor.getFlag("dawnbreaker-trials", "foresightUsed")) continue;
+          const dist = Math.abs(Math.round(t.document.x / size) - dx) + Math.abs(Math.round(t.document.y / size) - dy);
+          if (dist > 5) continue;
+          savedBy = "Foresight"; oracleActor = t.actor; break;
+        }
+      }
+    }
+    if (savedBy) {
+      if (oracleActor) await oracleActor.setFlag("dawnbreaker-trials", "foresightUsed", true);
+      const updates = { "system.hp.current": 1 };
+      if (oathGuard) {
+        const c2 = conditions.filter(c => c.label !== "hpguard");
+        c2.push({ name: "HP Guard (−50%)", label: "hpguard", duration: 1, instance: 0, effect: "-50%" });
+        updates["system.conditions"] = c2;
+      }
+      await actor.update(updates, { allowHealDown: true });
+      await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #f5c518;border-radius:6px;padding:10px;font-family:sans-serif;color:#d4d8e0;text-align:center;"><div style="font-size:14px;font-weight:700;color:#f5c518;">✨ ${savedBy}</div><div style="font-size:12px;margin-top:4px;"><b>${actor.name}</b> refuses to fall — surviving at <b>1 HP</b>!${oracleActor ? ` <span style="color:#7a8090;">(${oracleActor.name})</span>` : ""}</div></div>` });
+      return;
+    }
+  }
+
   conditions.push({ name: "Down", label: "down", duration: 4, effect: "Unit is incapacitated. Removed from combat after 4 turns." });
   await actor.update({ "system.conditions": conditions });
   await _applyStatusEffect(actor, "down", true);
@@ -4714,6 +4834,17 @@ const DB_REACTIONS = {
 
 // Run all matching reactions for a trigger — returns { handled: bool, finalDmg: number }
 async function _runReactions(trigger, actor, dmg, attackType, sourceActorId = null, sourceTokenId = null) {
+  // Exposed (Garrote) — the next incoming attack ignores this unit's reactions.
+  // Consume one instance and skip the whole chain.
+  const exIdx = (actor.system.conditions ?? []).findIndex(c => (c.name ?? "").toLowerCase() === "exposed" && (c.instance ?? 0) > 0);
+  if (exIdx >= 0) {
+    const conds = foundry.utils.deepClone(actor.system.conditions);
+    conds[exIdx].instance -= 1;
+    if (conds[exIdx].instance <= 0) conds.splice(exIdx, 1);
+    await actor.update({ "system.conditions": conds });
+    await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e07a30;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🗡 <b>Exposed</b> — ${actor.name}'s reactions fail against this attack!</div>` });
+    return { handled: false, finalDmg: dmg };
+  }
   const reactions = DB_REACTIONS[trigger] ?? [];
   for (const reaction of reactions) {
     // Check embedded items, system.abilities text arrays, AND system.attacks (NPC)
@@ -5317,6 +5448,24 @@ window._dbApplyDamage = async (data) => {
       }
     }
 
+    // ── T3-expansion condition adjusters (pre-reaction) ──────────────────────
+    if (finalDmg > 0) {
+      const srcTokAdj = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+        ?? (data.sourceActorId ? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId) : null);
+      const srcActAdj = srcTokAdj?.actor ?? (data.sourceActorId ? game.actors.get(data.sourceActorId) : null);
+      const defTokAdj = _actorToken(actor);
+      // Reckless Might — source deals +4, target takes +4 (stacking if both)
+      if (srcActAdj?.getFlag("dawnbreaker-trials", "recklessMight")?.active) finalDmg += 4;
+      if (actor.getFlag("dawnbreaker-trials", "recklessMight")?.active) finalDmg += 4;
+      // Marked (Spotter's Mark) — attacks from the marker's side deal +2
+      if (srcActAdj && (actor.system.conditions ?? []).some(c => (c.name ?? "").toLowerCase() === "marked")) finalDmg += 2;
+      // Hold the Line — unmoved defender, hit from front/side: −5 HP damage
+      if (_dbHasAbility(actor, "hold the line") && !(actor.system.turnPhase?.moved) && srcTokAdj && defTokAdj
+        && !window._isAttackingFromBehind(defTokAdj, srcTokAdj)) {
+        finalDmg = Math.max(1, finalDmg - 5);
+      }
+    }
+
     // Run HP damage reactions (skipped if Tunnel Ambush)
     const { handled, finalDmg: reactionDmg } = isTunnelAmbush
       ? { handled: false, finalDmg: finalDmg }
@@ -5359,12 +5508,70 @@ window._dbApplyDamage = async (data) => {
     // HP attacks always deal at least 1 damage, even after all reductions
     if (rawDamage > 0 && moonDmg === 0) moonDmg = 1;
 
-    const newHP = Math.max(0, currentHP - moonDmg);
+    let newHP = Math.max(0, currentHP - moonDmg);
+
+    // ── Stillpoint (Oracle) — allies within 7 of the Oracle cannot drop below 1 HP ──
+    if (newHP < 1 && currentHP > 0) {
+      const spTok = _actorToken(actor);
+      if (spTok) {
+        const size7 = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+        const ax7 = Math.round(spTok.document.x / size7), ay7 = Math.round(spTok.document.y / size7);
+        for (const t of canvas.tokens?.placeables ?? []) {
+          if (!t.actor || t.document.disposition !== spTok.document.disposition) continue;
+          const sp = t.actor.getFlag("dawnbreaker-trials", "stillpoint");
+          if (!sp?.active) continue;
+          const dist7 = Math.abs(Math.round(t.document.x / size7) - ax7) + Math.abs(Math.round(t.document.y / size7) - ay7);
+          if (dist7 > 7) continue;
+          newHP = 1;
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⏳ <b>Stillpoint</b> — time refuses <b>${actor.name}</b>'s fall. (${t.actor.name})</div>` });
+          break;
+        }
+      }
+    }
+
     await actor.update({ "system.hp.current": newHP });
     _recordCombatDamage(actor, data.tokenId, currentHP - newHP, newHP <= 0, data.sourceActorId, data.sourceTokenId);
     if (newHP <= 0) {
       await CastQueue.cancelForActor(actor.id, "was downed", actor.isToken ? actor.token?.id : (data?.tokenId ?? null));
       await _applyDownCondition(actor, { suppressChat: true });
+    }
+
+    // ── T3-expansion post-apply hooks ────────────────────────────────────────
+    if (currentHP - newHP > 0) {
+      // Taking damage breaks Stealth
+      if (_dbIsStealthed(actor)) await _dbBreakStealth(actor, "took damage");
+      // Branded (Lightbrand) — every hit on the branded target heals allies adjacent to it 2 HP + 2 AR
+      if ((actor.system.conditions ?? []).some(c => (c.name ?? "").toLowerCase() === "branded")) {
+        const bTok = _actorToken(actor);
+        if (bTok) {
+          const sizeB = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
+          const bx = Math.round(bTok.document.x / sizeB), by = Math.round(bTok.document.y / sizeB);
+          for (const t of canvas.tokens.placeables) {
+            if (!t.actor || t.id === bTok.id) continue;
+            if (t.document.disposition === bTok.document.disposition) continue; // heals the brander's side
+            const d = Math.abs(Math.round(t.document.x / sizeB) - bx) + Math.abs(Math.round(t.document.y / sizeB) - by);
+            if (d > 1) continue;
+            const hCur = t.actor.system.hp?.current ?? 0, hMax = t.actor.system.hp?.max ?? 0;
+            const aCur = t.actor.system.ar?.current ?? 0, aMax = t.actor.system.ar?.max ?? 0;
+            if (hCur <= 0) continue; // Down allies don't benefit
+            await t.actor.update({ "system.hp.current": Math.min(hMax, hCur + 2), "system.ar.current": Math.min(aMax, aCur + 2) });
+          }
+        }
+      }
+      // Terror Mark — the marked attacker striking anyone but its marker takes 5 HP backlash
+      if (data.sourceActorId) {
+        const tmSrcTok = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+          ?? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId);
+        const tmSrc = tmSrcTok?.actor ?? game.actors.get(data.sourceActorId);
+        const tm = tmSrc?.getFlag("dawnbreaker-trials", "terrorMarkedBy");
+        if (tm?.actorId && actor.id !== tm.actorId) {
+          const sHP = tmSrc.system.hp?.current ?? 0;
+          const sNew = Math.max(0, sHP - 5);
+          await tmSrc.update({ "system.hp.current": sNew });
+          await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #a080ff;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">😨 <b>Terror Mark</b> — ${tmSrc.name} defied the mark and takes <b>5 HP</b> backlash!</div>` });
+          if (sNew <= 0) { await CastQueue.cancelForActor(tmSrc.id, "was downed", tmSrc.isToken ? tmSrc.token?.id : null); await _applyDownCondition(tmSrc); }
+        }
+      }
     }
 
     // Stoic Stance — track HP damage taken
@@ -5516,6 +5723,21 @@ window._dbApplyDamage = async (data) => {
       if (finalNewAR !== data.newAR) {
         await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🤝 <b>Assist</b> — ${actor.name} reduces AR damage: <span style="color:#81c784;font-weight:700;">−${assistBonus} ASS</span></div>` });
       }
+    }
+    // ── T3-expansion AR adjusters ──
+    if (currentAR - finalNewAR > 0) {
+      let arDmgAdj = currentAR - finalNewAR;
+      // Marked — +2 damage from attackers
+      if (data.sourceActorId && (actor.system.conditions ?? []).some(c => (c.name ?? "").toLowerCase() === "marked")) arDmgAdj += 2;
+      // Hold the Line — unmoved defender, hit from front/side: −2 AR damage
+      const hlSrcTok = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId) : null)
+        ?? (data.sourceActorId ? canvas.tokens?.placeables?.find(t => t.actor?.id === data.sourceActorId) : null);
+      const hlDefTok = _actorToken(actor);
+      if (_dbHasAbility(actor, "hold the line") && !(actor.system.turnPhase?.moved) && hlSrcTok && hlDefTok
+        && !window._isAttackingFromBehind(hlDefTok, hlSrcTok)) {
+        arDmgAdj = Math.max(0, arDmgAdj - 2);
+      }
+      finalNewAR = Math.max(0, currentAR - arDmgAdj);
     }
     // Apply AR Guard condition check
     const arDmgAmount = currentAR - finalNewAR;
@@ -6589,6 +6811,12 @@ const _COMBAT_FLAGS = [
   "gatheringStorm", "hauntData", "lightAura", "moonGuardian", "myrBandageUsed",
   "myrWILBonus", "shatterUsed", "shellUsed", "soulThread", "stoicDamage",
   "tailwindStacks", "tendonTargets", "tetherBonus", "tetherTarget", "tunnelAmbush",
+  // T3 expansion — combat-scoped flags
+  "recklessMight", "surviveDown", "foresightUsed", "terrorMarkedBy", "stillpoint",
+  "overloadCrit", "pactOfRuin", "lightbrand", "warpathActive", "colossusGrip",
+  "martyrChains", "twinShadowsUsed", "killshotUsed", "finalWordUsed",
+  "stillpointUsed", "unbreakableOathUsed", "aegisDome", "battleHymn",
+  "overwatchActive", "mirrorWard", "phalanxWall",
 ];
 
 async function _clearCombatFlags() {
@@ -7772,6 +8000,8 @@ class TargetSelector extends foundry.appv1.api.Application {
       }
 
       const isEnemy = t.document.disposition !== attackerDisp;
+      // Stealthed units cannot be targeted normally — exclude from enemy lists
+      if (isEnemy && (t.actor.system?.conditions ?? []).some(c => (c.name ?? "").toLowerCase() === "stealthed")) continue;
       const entry = buildEntry(t);
       if (this._targetType === "enemy" && isEnemy) enemies.push(entry);
       else if (this._targetType === "ally" && !isEnemy) allies.push(entry);
