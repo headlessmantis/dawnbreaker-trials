@@ -96,6 +96,26 @@ Hooks.once("init", () => {
     default: {},
   });
 
+  // ── Per-player HUD scaling ──────────────────────────────────────────────
+  // Both client-scoped so every player tunes their own screen. The size
+  // slider shrinks the whole HUD (current look = 100% = largest); the font
+  // slider scales text up via a CSS var baked into every font-size rule, so
+  // the flex layout reflows cleanly instead of breaking.
+  game.settings.register(NS, "hudScale", {
+    name: "HUD Size",
+    hint: "Overall size of the Dawnbreaker HUD (party bar, action menu, guest panel). 100% is the current/largest size. Per-player setting.",
+    scope: "client", config: true, type: Number,
+    range: { min: 0.6, max: 1.0, step: 0.05 }, default: 1.0,
+    onChange: () => DawnbreakerPartyHUD.applyUserScale(),
+  });
+  game.settings.register(NS, "hudFontScale", {
+    name: "HUD Font Size",
+    hint: "Scales the HUD's text up for readability. The HUD re-flows automatically to fit the larger text. Per-player setting.",
+    scope: "client", config: true, type: Number,
+    range: { min: 1.0, max: 1.4, step: 0.05 }, default: 1.0,
+    onChange: () => DawnbreakerPartyHUD.applyUserScale(),
+  });
+
   // Context menu hook must be registered at init — it fires at sidebar render time, not on right-click
   Hooks.on("getActorContextOptions", (_app, options) => {
     if (!game.user?.isGM) return;
@@ -210,10 +230,24 @@ class DawnbreakerPartyHUD {
   static _lastActiveTurnTokenId   = null;      // tracks last turn start to avoid re-firing
   static _minimized = localStorage.getItem("dbt-party-hud-minimized") === "1";
 
+  // ── Per-player scale ───────────────────────────────────────────────────────
+  // Reads the two client sliders and pushes them into CSS vars. zoom handles
+  // whole-HUD size; --dbt-font-scale is baked into every font-size rule at
+  // style-injection time so text growth reflows the layout.
+  static applyUserScale() {
+    let size = 1.0, font = 1.0;
+    try { size = game.settings.get(NS, "hudScale") ?? 1.0; } catch (e) {}
+    try { font = game.settings.get(NS, "hudFontScale") ?? 1.0; } catch (e) {}
+    const root = document.documentElement;
+    root.style.setProperty("--dbt-hud-zoom", String(size));
+    root.style.setProperty("--dbt-font-scale", String(font));
+  }
+
   // ── Init ──────────────────────────────────────────────────────────────────
 
   static initialize() {
     console.log("[DBT HUD] PartyHUD.initialize() called");
+    DawnbreakerPartyHUD.applyUserScale();
 
     // Live bar/badge updates — linked tokens fire updateActor, unlinked fire updateToken
     // Re-fetch from game.actors to ensure prepareData-derived stats (PR/MR/AP totalKennel) are current.
@@ -637,8 +671,12 @@ class DawnbreakerPartyHUD {
     const npcTag = !isParty ? ` dbt-card-npc` : "";
     const cardId = tokenId ? `dbt-card-tok-${tokenId}` : `dbt-card-${actor.id}`;
 
-    // Non-party actors are hidden behind STATUS:NULL unless they have a Scan condition
-    const hasScanned = isParty || (sys.conditions ?? []).some(c => c.name?.toLowerCase() === "scan");
+    // Non-party actors are hidden behind STATUS:NULL unless friendly or Scanned.
+    // Friendly-disposition units (companions, allied NPCs) never need Scan —
+    // only enemies hide their stats from players.
+    const cardToken   = tokenId ? canvas?.tokens?.get?.(tokenId) : null;
+    const isFriendly  = (cardToken?.document?.disposition ?? null) === CONST.TOKEN_DISPOSITIONS.FRIENDLY || actor.isOwner;
+    const hasScanned = isParty || isFriendly || (sys.conditions ?? []).some(c => c.name?.toLowerCase() === "scan");
 
     const bodyHtml = hasScanned ? `
         <div class="dbt-card-name">${isCaptain ? '<span class="dbt-captain-badge" title="Squad Captain">★</span> ' : ""}${displayName}<span class="dbt-dot">.</span>${nameSuffix}</div>
@@ -1205,18 +1243,23 @@ class DawnbreakerHUD {
         .map(a => ({ name: a.name, cost: a.cost || "", speed: a.speed || "", macroName: a.name, desc: a.effect || "" }));
     }
     if (groupId === "inventory") {
+      // Resolve the macro for an item: explicit system.macroName first, then
+      // fall back to a world macro matching the item's own name — so standard
+      // consumables (Tincture Flask etc.) work without configuring the field.
+      const itemMacro = (it) => {
+        const explicit = it.system?.macroName?.trim();
+        if (explicit && game.macros.find(m => m.name === explicit)) return explicit;
+        const byName = it.name?.trim();
+        if (byName && game.macros.find(m => m.name === byName)) return byName;
+        return null;
+      };
       return (actor.items ?? [])
-        .filter(it => {
-          if (!it?.name?.trim()) return false;
-          const mn = it.system?.macroName?.trim();
-          if (!mn) return false; // must have macroName set
-          return !!game.macros.find(m => m.name === mn);
-        })
+        .filter(it => it?.name?.trim() && itemMacro(it))
         .map(it => ({
           name:      it.name,
           cost:      "",
           speed:     "",
-          macroName: it.system.macroName.trim(),
+          macroName: itemMacro(it),
           desc:      it.system?.effect ?? it.system?.desc ?? "",
           icon:      it.img && !it.img.includes("mystery-man") ? it.img : "",
           qty:       it.system?.qty ?? it.system?.quantity ?? it.system?.charges ?? null,
@@ -1489,7 +1532,12 @@ class DawnbreakerHUD {
     if (document.getElementById("dbt-hud-css")) return;
     const el = document.createElement("style");
     el.id = "dbt-hud-css";
-    el.textContent = DBT_HUD_CSS;
+    // Bake the per-player font scale into every font-size rule so text growth
+    // reflows the flex layout naturally (no fixed-px text overflowing).
+    let css = DBT_HUD_CSS.replace(/font-size:\s*([\d.]+)px/g, "font-size:calc($1px * var(--dbt-font-scale, 1))");
+    // Whole-HUD size via zoom (reflows cleanly in Chromium/Electron)
+    css += `\n#${PARTY_ROOT_ID}, #${GUEST_ROOT_ID}, #${HUD_ROOT_ID}, #${HUD_SUB_ID} { zoom: var(--dbt-hud-zoom, 1); }\n`;
+    el.textContent = css;
     document.head.appendChild(el);
   }
 }

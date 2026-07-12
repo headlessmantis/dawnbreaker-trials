@@ -19,6 +19,18 @@ function _actorToken(actor) {
   return canvas.tokens?.placeables?.find(t => t.actor?.id === actor.id) ?? null;
 }
 
+// Attack reach from equipped gear. Prefers equipped WEAPONS and takes the max —
+// a `.find()` over weapon+offhand returns whichever item happens to be first in
+// the list, so an equipped shield (reach 1) could mask a shortbow (reach 4).
+function _dbWeaponReach(actor, fallback = 1) {
+  const eq = actor?.items?.filter?.(i => ["weapon", "offhand"].includes(i.type) && i.system?.equipped) ?? [];
+  const weapons = eq.filter(i => i.type === "weapon");
+  const src = weapons.length ? weapons : eq;
+  if (!src.length) return fallback;
+  return Math.max(...src.map(i => parseInt(i.system?.reach) || 1));
+}
+window._dbWeaponReach = _dbWeaponReach;
+
 function kennelMult(value, kennel) {
   if (kennel <= 0) return 0;
   return Math.floor(value * (kennel / 100));
@@ -3127,6 +3139,11 @@ async function _showMovementRange(token, mvOverride = null) {
   if (!canvas.interface?.grid) return;
   const actor = token.actor;
   if (!actor) return;
+  // Players never see a non-allied unit's movement range — GM only.
+  if (!game.user.isGM) {
+    const friendly = token.document?.disposition === CONST.TOKEN_DISPOSITIONS.FRIENDLY;
+    if (!friendly && !actor.isOwner) return;
+  }
   _dbMoveActiveTokenId = token.document?.id ?? token.id;
   const mv   = mvOverride !== null ? mvOverride : _getMVTotal(actor);
   const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
@@ -3189,8 +3206,8 @@ async function _showMovementRange(token, mvOverride = null) {
         if (!hasMenace) return false;
         const ex = Math.round(t.document.x / size);
         const ey = Math.round(t.document.y / size);
-        // Get weapon reach
-        const weaponReach = t.actor.items.find(i => ["weapon","offhand"].includes(i.type) && i.system.equipped)?.system?.reach ?? 1;
+        // Get weapon reach (weapon-preferring max — a shield must not mask the bow)
+        const weaponReach = _dbWeaponReach(t.actor, 1);
         // Get facing from About Face flag
         const afDir  = t.document.flags?.["about-face"]?.direction ?? 90;
         const facing = afDir < 45 || afDir >= 315 ? "E" : afDir < 135 ? "S" : afDir < 225 ? "W" : "N";
@@ -4522,7 +4539,7 @@ const DB_REACTIONS = {
         const dx2         = Math.round(defenderToken.document.x / size);
         const dy2         = Math.round(defenderToken.document.y / size);
         const defDisp     = defenderToken.document.disposition;
-        const weaponReach = actor.items.find(i => ["weapon","offhand"].includes(i.type) && i.system.equipped)?.system?.reach ?? 1;
+        const weaponReach = _dbWeaponReach(actor, 1);
 
         // Prefer the exact attacking token if it was passed through — this is
         // required when multiple duplicate/unlinked tokens (e.g. several
@@ -4913,27 +4930,50 @@ window._dbUndo = async () => {
 };
 
 // ── Combat stats tracker (GM authoritative — drives the end-of-combat recap) ──
-// null when not in combat; { [tokenId|actorId]: {name, dealt, taken, healed, downs} }
+// null when not in combat.
+// { [tokenId|actorId]: {name, hpDealt, arDealt, taken, healed, downs, hostile} }
 let _combatStats = null;
 function _cbKey(actorId, tokenId) { return tokenId || actorId; }
-function _cbEntry(key, name) {
+function _cbTokenHostile(actorId, tokenId) {
+  const tok = (tokenId ? canvas.tokens?.placeables?.find(t => t.document.id === tokenId) : null)
+    ?? canvas.tokens?.placeables?.find(t => t.actor?.id === actorId);
+  const disp = tok?.document?.disposition;
+  return disp !== undefined && disp !== CONST.TOKEN_DISPOSITIONS.FRIENDLY;
+}
+function _cbEntry(key, name, { actorId = null, tokenId = null } = {}) {
   if (!_combatStats || !key) return null;
-  if (!_combatStats[key]) _combatStats[key] = { name: name ?? "Unknown", dealt: 0, taken: 0, healed: 0, downs: 0 };
-  else if (name) _combatStats[key].name = name;
+  if (!_combatStats[key]) {
+    _combatStats[key] = {
+      name: name ?? "Unknown", hpDealt: 0, arDealt: 0, taken: 0, healed: 0, downs: 0,
+      hostile: _cbTokenHostile(actorId, tokenId ?? (typeof key === "string" ? key : null)),
+    };
+  } else if (name) _combatStats[key].name = name;
   return _combatStats[key];
 }
-function _recordCombatDamage(targetActor, targetTokenId, amount, downed, sourceActorId, sourceTokenId) {
+function _recordCombatDamage(targetActor, targetTokenId, amount, downed, sourceActorId, sourceTokenId, kind = "hp") {
   if (!_combatStats || amount <= 0) return;
-  const tKey = _cbKey(targetActor.id, targetTokenId ?? (targetActor.isToken ? targetActor.token?.id : null));
-  const te = _cbEntry(tKey, targetActor.name);
+  const tTok = targetTokenId ?? (targetActor.isToken ? targetActor.token?.id : null);
+  const te = _cbEntry(_cbKey(targetActor.id, tTok), targetActor.name, { actorId: targetActor.id, tokenId: tTok });
   if (te) { te.taken += amount; if (downed) te.downs += 1; }
   if (sourceActorId) {
     const srcName = (sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === sourceTokenId)?.actor?.name : null)
       ?? game.actors.get(sourceActorId)?.name;
-    const se = _cbEntry(_cbKey(sourceActorId, sourceTokenId), srcName);
-    if (se) se.dealt += amount;
+    const se = _cbEntry(_cbKey(sourceActorId, sourceTokenId), srcName, { actorId: sourceActorId, tokenId: sourceTokenId });
+    if (se) { if (kind === "ar") se.arDealt += amount; else se.hpDealt += amount; }
   }
 }
+
+// ── Heal attribution ─────────────────────────────────────────────────────────
+// The HP-rise observer can't know WHO healed — so heal-performing paths open a
+// short credit window naming the healer, and the observer credits them instead
+// of the recipient. Falls back to the recipient (self-regen etc.) when no
+// window is open.
+let _dbHealCredit = null; // { key, name, actorId, tokenId, until }
+function _dbSetHealCredit(actorId, tokenId, name) {
+  if (!game.user.isGM) return;
+  _dbHealCredit = { key: _cbKey(actorId, tokenId), name: name ?? null, actorId, tokenId: tokenId ?? null, until: Date.now() + 5000 };
+}
+window._dbSetHealCredit = _dbSetHealCredit;
 
 // GM-side healing observer: any HP increase during combat counts as "healed"
 // on the recipient (source-agnostic, so it captures every heal path reliably).
@@ -4994,9 +5034,18 @@ Hooks.on("updateActor", (actor, changes) => {
   const prev = _dbHpBefore.get(key);
   _dbHpBefore.set(key, newHP);
   if (prev !== undefined && newHP > prev) {
-    const tokenId = actor.isToken ? actor.token?.id : null;
-    const e = _cbEntry(_cbKey(actor.id, tokenId), actor.name);
-    if (e) e.healed += (newHP - prev);
+    const amount = newHP - prev;
+    // Credit the HEALER when a heal path opened a credit window; otherwise
+    // fall back to the recipient (regen, unattributed sources).
+    const credit = (_dbHealCredit && Date.now() < _dbHealCredit.until) ? _dbHealCredit : null;
+    if (credit) {
+      const e = _cbEntry(credit.key, credit.name, { actorId: credit.actorId, tokenId: credit.tokenId });
+      if (e) e.healed += amount;
+    } else {
+      const tokenId = actor.isToken ? actor.token?.id : null;
+      const e = _cbEntry(_cbKey(actor.id, tokenId), actor.name, { actorId: actor.id, tokenId });
+      if (e) e.healed += amount;
+    }
   }
 });
 
@@ -5427,7 +5476,7 @@ window._dbApplyDamage = async (data) => {
           if (!hasCF) continue;
           if (!cfActor.getFlag("dawnbreaker-trials", "coverFireActive")) continue;
           // Check attacker in range
-          const cfReach = (cfActor.items.find(i => ["weapon","offhand"].includes(i.type) && i.system.equipped)?.system?.reach ?? 4) + 4;
+          const cfReach = _dbWeaponReach(cfActor, 4) + 4;
           const dist = Math.abs(Math.round(cfToken.document.x/size) - Math.round(attackerToken3.document.x/size))
                      + Math.abs(Math.round(cfToken.document.y/size) - Math.round(attackerToken3.document.y/size));
           if (dist > cfReach) continue;
@@ -5478,7 +5527,7 @@ window._dbApplyDamage = async (data) => {
     if (handled) return;
     const actualARDmg = currentAR - reactionAR;
     await actor.update({ "system.ar.current": reactionAR });
-    _recordCombatDamage(actor, data.tokenId, actualARDmg, false, data.sourceActorId, data.sourceTokenId);
+    _recordCombatDamage(actor, data.tokenId, actualARDmg, false, data.sourceActorId, data.sourceTokenId, "ar");
     await _handleCrystalBurrowerBreakpoints(actor, currentAR, reactionAR);
     await _checkGolemGripBreak(actor, actualARDmg);
 
@@ -5749,6 +5798,10 @@ const CastQueue = {
       await ChatMessage.create({ content: `<div style="background:#1a1c20;border:1px solid #e05555;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">⚡ <b>${entry.abilityName}</b> fizzled — ${caster.name} has ${cancelCond.name}.</div>` });
       return;
     }
+    // Heal casts: open a credit window so the HP-rise observer attributes the
+    // healing to the CASTER in the combat recap, not the recipient. Covers
+    // both formula heals and onResolve-callback heals (Lifeline/Prayer/Cure).
+    if (entry.attackType === "heal") _dbSetHealCredit(entry.actorId, entry.casterTokenId ?? null, caster.name);
     let resolvedTargets = [];
     if (entry.aoeRange > 0 && entry.targetX !== null && entry.targetY !== null) {
       const size = canvas.grid.sizeX ?? canvas.grid.size ?? 100;
@@ -5860,9 +5913,12 @@ const CastQueue = {
       const cb = CastQueue._localCallbacks.get(entry.callbackId);
       if (cb) {
         CastQueue._localCallbacks.delete(entry.callbackId);
-        try { await cb(caster); } catch(e) { console.warn("CastQueue | onResolve failed:", e); }
+        // Pass (caster, target, targetToken) — Lifeline-style callbacks need
+        // their stored target; passing only the caster left `target` undefined
+        // and the callback threw silently.
+        try { await cb(caster, target ?? null, targetToken ?? null); } catch(e) { console.warn("CastQueue | onResolve failed:", e); }
       } else {
-        game.socket.emit("system.dawnbreaker-trials", { type: "castResolvedCallback", callbackId: entry.callbackId, actorId: entry.actorId, casterTokenId: entry.casterTokenId ?? null });
+        game.socket.emit("system.dawnbreaker-trials", { type: "castResolvedCallback", callbackId: entry.callbackId, actorId: entry.actorId, casterTokenId: entry.casterTokenId ?? null, targetId: entry.targetId ?? null, targetTokenId: entry.targetTokenId ?? null });
       }
     }
   },
@@ -6557,22 +6613,29 @@ async function _clearCombatFlags() {
 async function _postCombatRecap() {
   const stats = _combatStats;
   _combatStats = null; // stop tracking
+  _dbHealCredit = null;
   if (!stats) return;
-  const rows = Object.values(stats).filter(s => s.dealt > 0 || s.taken > 0 || s.healed > 0);
+  const rows = Object.values(stats).filter(s =>
+    (s.hpDealt ?? 0) > 0 || (s.arDealt ?? 0) > 0 || (s.healed ?? 0) > 0 || (s.downs ?? 0) > 0);
   if (!rows.length) return;
 
-  const mvp   = rows.reduce((a, b) => (b.dealt > a.dealt ? b : a));
-  const scape = rows.reduce((a, b) => (b.taken > a.taken ? b : a));
-  const medic = rows.reduce((a, b) => (b.healed > a.healed ? b : a), { healed: 0, name: null });
+  // Badge candidates: party/allies only — enemies stay in the table but never
+  // take MVP / Needed Most Help / Field Medic.
+  const allies    = rows.filter(s => !s.hostile);
+  const totalOf   = (s) => (s.hpDealt ?? 0) + (s.arDealt ?? 0);
+  const top = (arr, val) => arr.reduce((a, b) => (val(b) > val(a) ? b : a), arr[0] ?? null);
+  const mvp   = allies.length ? top(allies, totalOf) : null;
+  const scape = allies.length ? top(allies, s => s.taken ?? 0) : null;
+  const medic = allies.length ? top(allies, s => s.healed ?? 0) : null;
 
   const esc = (s) => String(s ?? "").replace(/</g, "&lt;");
   const tableRows = rows
-    .sort((a, b) => b.dealt - a.dealt)
+    .sort((a, b) => totalOf(b) - totalOf(a))
     .map(s => `<tr>
-        <td style="padding:2px 6px;color:#d4d8e0;">${esc(s.name)}</td>
-        <td style="padding:2px 6px;text-align:right;color:#e8c86a;font-weight:700;">${s.dealt}</td>
-        <td style="padding:2px 6px;text-align:right;color:#e57373;">${s.taken}</td>
-        <td style="padding:2px 6px;text-align:right;color:#81c784;">${s.healed}</td>
+        <td style="padding:2px 6px;color:${s.hostile ? "#a08585" : "#d4d8e0"};">${esc(s.name)}${s.hostile ? ` <span style="color:#7a8090;font-size:9px;">(enemy)</span>` : ""}</td>
+        <td style="padding:2px 6px;text-align:right;color:#e8c86a;font-weight:700;">${s.hpDealt ?? 0}</td>
+        <td style="padding:2px 6px;text-align:right;color:#64b5f6;font-weight:700;">${s.arDealt ?? 0}</td>
+        <td style="padding:2px 6px;text-align:right;color:#81c784;">${s.healed ?? 0}</td>
         <td style="padding:2px 6px;text-align:center;color:${s.downs ? "#e05555" : "#7a8090"};">${s.downs || "—"}</td>
       </tr>`).join("");
 
@@ -6585,9 +6648,9 @@ async function _postCombatRecap() {
        </div>` : "";
 
   const badges = [
-    badge("🏆", "MVP", mvp.dealt > 0 ? mvp.name : null, `${mvp.dealt} dmg dealt`, "#e8c86a"),
-    badge("🩹", "Needed Most Help", scape.taken > 0 ? scape.name : null, `${scape.taken} dmg taken${scape.downs ? ` · ${scape.downs} down${scape.downs>1?"s":""}` : ""}`, "#e57373"),
-    badge("✚", "Field Medic", medic.healed > 0 ? medic.name : null, `${medic.healed} HP restored`, "#81c784"),
+    badge("🏆", "MVP", (mvp && totalOf(mvp) > 0) ? mvp.name : null, mvp ? `${totalOf(mvp)} dmg dealt` : "", "#e8c86a"),
+    badge("🩹", "Needed Most Help", (scape && (scape.taken ?? 0) > 0) ? scape.name : null, scape ? `${scape.taken} dmg taken${scape.downs ? ` · ${scape.downs} down${scape.downs>1?"s":""}` : ""}` : "", "#e57373"),
+    badge("✚", "Field Medic", (medic && (medic.healed ?? 0) > 0) ? medic.name : null, medic ? `${medic.healed} HP restored` : "", "#81c784"),
   ].filter(Boolean).join("");
 
   await ChatMessage.create({ content: `
@@ -6597,8 +6660,8 @@ async function _postCombatRecap() {
       <table style="width:100%;font-size:11px;border-collapse:collapse;">
         <thead><tr style="color:#7a8090;font-size:9px;text-transform:uppercase;letter-spacing:1px;">
           <th style="padding:2px 6px;text-align:left;">Unit</th>
-          <th style="padding:2px 6px;text-align:right;">Dealt</th>
-          <th style="padding:2px 6px;text-align:right;">Taken</th>
+          <th style="padding:2px 6px;text-align:right;">HP Dealt</th>
+          <th style="padding:2px 6px;text-align:right;">AR Dealt</th>
           <th style="padding:2px 6px;text-align:right;">Healed</th>
           <th style="padding:2px 6px;text-align:center;">Downs</th>
         </tr></thead>
@@ -7673,7 +7736,9 @@ class TargetSelector extends foundry.appv1.api.Application {
 
     const buildEntry = (t) => {
       const actor = t.actor, scanned = actor?.system?.conditions?.some(c => c.name.toLowerCase() === "scan");
-      const showStats = !(actor?.type === "npc") || scanned || game.user.isGM;
+      // Friendly-disposition units never need Scan — only enemies hide stats
+      const friendlyUnit = t.document.disposition === CONST.TOKEN_DISPOSITIONS.FRIENDLY;
+      const showStats = !(actor?.type === "npc") || friendlyUnit || scanned || game.user.isGM;
       const dist = attackerToken ? this._tileDistance(attackerToken, t) : 0;
       // LOS check for ranged attacks (reach > 1) — straight line blocked by tokens/walls unless archingShot.
       // Only enemies require line of sight; support abilities on allies (heals,
@@ -7834,8 +7899,14 @@ window._resolveThrow = async ({ thrower, targetActor, targetTokenId = null, item
     }
   }
   if (Object.keys(updates).length > 0) {
-    if (game.user.isGM) await targetActor.update(updates);
-    else game.socket.emit("system.dawnbreaker-trials", { type: "throwApply", actorId: targetActor.id, updates });
+    const healerTokenId = thrower.isToken ? thrower.token?.id : null;
+    if (game.user.isGM) {
+      // Credit restore-effects to the thrower in the combat recap
+      if (updates["system.hp.current"] !== undefined) _dbSetHealCredit(thrower.id, healerTokenId, thrower.name);
+      await targetActor.update(updates);
+    } else {
+      game.socket.emit("system.dawnbreaker-trials", { type: "throwApply", actorId: targetActor.id, updates, sourceActorId: thrower.id, sourceTokenId: healerTokenId });
+    }
   }
   if (resultLines.length > 0) await ChatMessage.create({ speaker, content: `<div style="background:#1a1c20;border:1px solid #81c784;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🪃 <b>${targetActor.name}</b> hit by <b>${item.name}</b><br/>${resultLines.join("<br/>")}</div>` });
   else await ChatMessage.create({ speaker, content: `<div style="background:#1a1c20;border:1px solid #c8a84b;border-radius:4px;padding:6px 10px;font-family:sans-serif;font-size:12px;color:#d4d8e0;">🪃 <b>${item.name}</b> hit <b>${targetActor.name}</b>${effectStr ? " — " + item.system.effect : " — no effect defined."}</div>` });
@@ -9066,7 +9137,11 @@ Hooks.once("ready", () => {
         CastQueue._localCallbacks.delete(data.callbackId);
         const cbCasterToken = data.casterTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.casterTokenId) : null;
         const cbCaster = cbCasterToken?.actor ?? game.actors.get(data.actorId);
-        try { await cb(cbCaster); } catch(e) { console.warn("CastQueue | onResolve failed:", e); }
+        // Resolve the stored target too (token-first) — Lifeline-style
+        // callbacks receive (caster, target, targetToken).
+        const cbTargetToken = data.targetTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.targetTokenId) : null;
+        const cbTarget = cbTargetToken?.actor ?? (data.targetId ? game.actors.get(data.targetId) : null);
+        try { await cb(cbCaster, cbTarget ?? null, cbTargetToken ?? null); } catch(e) { console.warn("CastQueue | onResolve failed:", e); }
       }
       return;
     }
@@ -9425,6 +9500,12 @@ Hooks.once("ready", () => {
       } else if (data.type === "applyARDamage") {
         await window._dbApplyDamage(data);
       } else if (data.type === "throwApply") {
+        // Credit HP restores to the source (thrower/healer) in the recap
+        if (data.sourceActorId && data.updates?.["system.hp.current"] !== undefined) {
+          const srcName = (data.sourceTokenId ? canvas.tokens?.placeables?.find(t => t.document.id === data.sourceTokenId)?.actor?.name : null)
+            ?? game.actors.get(data.sourceActorId)?.name;
+          _dbSetHealCredit(data.sourceActorId, data.sourceTokenId ?? null, srcName);
+        }
         await actor.update(data.updates);
       } else if (data.type === "applyCondition") {
         await actor.update({ "system.conditions": data.conditions });
