@@ -2257,10 +2257,12 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     const allPortraitVars = game.settings.get("dawnbreaker-trials", "portraitVariants") ?? {};
     context.portraitVariants = allPortraitVars[actor.id] ?? {};
 
-    // Outfits — named portrait/token image sets stored on the actor
+    // Outfits — named portrait/token image sets stored on the actor.
+    // Editing (create/rename/delete/images) is GM-only; players may only Wear.
     const outfitFlag = actor.getFlag("dawnbreaker-trials", "outfits") ?? { list: [], active: "" };
     context.outfits = outfitFlag.list ?? [];
     context.activeOutfit = outfitFlag.active ?? "";
+    context.outfitGM = game.user.isGM;
 
     // Enrich ability arrays with macro icon images for the abilities tab
     const _macroImg = (name, macroName) => {
@@ -2450,9 +2452,17 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     });
 
     // ── Outfit listeners ────────────────────────────────────
+    // Wearing an outfit is open to the actor's owner; creating, renaming,
+    // deleting, and setting images are GM-only.
     const _outfitData = () => foundry.utils.deepClone(this.actor.getFlag("dawnbreaker-trials", "outfits") ?? { list: [], active: "" });
     const _saveOutfits = async (data) => { await this.actor.setFlag("dawnbreaker-trials", "outfits", data); };
+    const _outfitGM = () => {
+      if (game.user.isGM) return true;
+      ui.notifications.warn("Only the GM can edit outfits.");
+      return false;
+    };
     const _newOutfit = async () => {
+      if (!_outfitGM()) return;
       const name = await new Promise(res => {
         new (foundry.appv1?.applications?.Dialog ?? Dialog)({
           title: "New Outfit",
@@ -2471,7 +2481,7 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     html.find(".db-outfit-select").on("change", async (ev) => {
       const val = ev.currentTarget.value;
       if (val === "___new") { ev.currentTarget.value = _outfitData().active ?? ""; await _newOutfit(); return; }
-      if (val) await window._dbApplyOutfit(this.actor, val);
+      if (val) { await window._dbApplyOutfit(this.actor, val); this.render(false); }
     });
     html.find(".outfit-add").click(() => _newOutfit());
     html.find(".outfit-apply").click(async (ev) => {
@@ -2479,6 +2489,7 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
       if (id) { await window._dbApplyOutfit(this.actor, id); this.render(false); }
     });
     html.find(".outfit-del").click(async (ev) => {
+      if (!_outfitGM()) return;
       const card = ev.currentTarget.closest(".outfit-card");
       const id = card?.dataset.id;
       const data = _outfitData();
@@ -2492,12 +2503,14 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
       this.render(false);
     });
     html.find(".outfit-name").on("change", async (ev) => {
+      if (!_outfitGM()) return;
       const id = ev.currentTarget.closest(".outfit-card")?.dataset.id;
       const data = _outfitData();
       const o = data.list.find(x => x.id === id);
       if (o) { o.name = ev.currentTarget.value.trim() || o.name; await _saveOutfits(data); this.render(false); }
     });
     html.find(".outfit-img-cell").click(async (ev) => {
+      if (!_outfitGM()) return;
       const cell = ev.currentTarget;
       const id = cell.closest(".outfit-card")?.dataset.id;
       const slot = cell.dataset.slot;
@@ -2515,6 +2528,7 @@ class DawnbreakerActorSheet extends foundry.appv1.sheets.ActorSheet {
     });
     html.find(".outfit-img-clear").click(async (ev) => {
       ev.stopPropagation();
+      if (!_outfitGM()) return;
       const cell = ev.currentTarget.closest(".outfit-img-cell");
       const id = cell?.closest(".outfit-card")?.dataset.id;
       const slot = cell?.dataset.slot;
